@@ -262,12 +262,33 @@ func contains(haystack []*string, needle string) bool {
 
 func instanceMatchesFilter(instance *ec2.Instance, filter *ec2.Filter) bool {
 	name := *filter.Name
+	glog.Infof("Checking filter %v on instance id %v", name, *instance.InstanceId)
+
 	if name == "private-dns-name" {
 		if instance.PrivateDnsName == nil {
 			return false
 		}
 		return contains(filter.Values, *instance.PrivateDnsName)
 	}
+
+	if name == "tag:" + TagNameKubernetesNode {
+		for _, tag := range instance.Tags {
+			if *tag.Key == TagNameKubernetesNode {
+				return contains(filter.Values, *tag.Value)
+			}
+		}
+		return false
+	}
+
+	if name == "tag:" + TagNameKubernetesCluster {
+		for _, tag := range instance.Tags {
+			if *tag.Key == TagNameKubernetesCluster {
+				return contains(filter.Values, *tag.Value)
+			}
+		}
+		return false
+	}
+
 	panic("Unknown filter name: " + name)
 }
 
@@ -295,8 +316,11 @@ func (self *FakeEC2) DescribeInstances(request *ec2.DescribeInstancesInput) ([]*
 			allMatch := true
 			for _, filter := range request.Filters {
 				if !instanceMatchesFilter(instance, filter) {
+					glog.Info("Filter didn't match")
 					allMatch = false
 					break
+				} else {
+					glog.Info("Filter matched")
 				}
 			}
 			if !allMatch {
@@ -474,6 +498,7 @@ func mockInstancesResp(instances []*ec2.Instance) *AWSCloud {
 		awsServices:      awsServices,
 		ec2:              awsServices.ec2,
 		availabilityZone: awsServices.availabilityZone,
+		cfg:		  &AWSCloudConfig{},
 	}
 }
 
@@ -695,5 +720,115 @@ func TestLoadBalancerMatchesClusterRegion(t *testing.T) {
 	err = c.UpdateTCPLoadBalancer("elb-name", badELBRegion, nil)
 	if err == nil || err.Error() != errorMessage {
 		t.Errorf("Expected UpdateTCPLoadBalancer region mismatch error.")
+	}
+}
+
+
+func TestUseKubernetesNodeTagForCloudID(t *testing.T) {
+	instanceId := "i-node-tagged"
+	nodeName := "node-01"
+
+	awsServices := NewFakeAWSServices()
+	c, err := newAWSCloud(strings.NewReader("[global]\nuseKubernetesNodeTag = true"), awsServices)
+	if err != nil {
+		t.Errorf("Error building aws cloud: %v", err)
+		return
+	}
+
+	tests := []struct {
+		name string
+		cloudIDFunc func(string) (string, error)
+		tags []*ec2.Tag
+		expectedCloudID string
+		expectError bool
+	}{
+		{
+			"Node name tag is set for ExternalID",
+			c.ExternalID,
+			[]*ec2.Tag{
+				&ec2.Tag{Key:aws.String(TagNameKubernetesNode), Value:aws.String(nodeName)},
+				&ec2.Tag{Key:aws.String(TagNameKubernetesCluster), Value:aws.String(TestClusterId)},
+			},
+			instanceId,
+			false,
+		},
+		{
+			"Node name tag is not set for ExternalID",
+			c.ExternalID,
+			[]*ec2.Tag{
+				&ec2.Tag{Key:aws.String(TagNameKubernetesCluster), Value:aws.String(TestClusterId)},
+			},
+			"",
+			true,
+		},
+		{
+			"Node name tag is set for InstanceID",
+			c.InstanceID,
+			[]*ec2.Tag{
+				&ec2.Tag{Key:aws.String(TagNameKubernetesNode), Value:aws.String(nodeName)},
+				&ec2.Tag{Key:aws.String(TagNameKubernetesCluster), Value:aws.String(TestClusterId)},
+			},
+			"/" + awsServices.availabilityZone + "/" + instanceId,
+			false,
+		},
+		{
+			"Node name tag is not set for InstanceID",
+			c.InstanceID,
+			[]*ec2.Tag{
+				&ec2.Tag{Key:aws.String(TagNameKubernetesCluster), Value:aws.String(TestClusterId)},
+			},
+			"",
+			true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Logf("Running test case %s", test.name)
+
+		var instance ec2.Instance
+		instance.InstanceId = &instanceId
+		instance.Tags = test.tags
+		instance.State = &ec2.InstanceState{Code:aws.Int64(16), Name:aws.String("running")}
+		instance.Placement = &ec2.Placement{AvailabilityZone:aws.String(awsServices.availabilityZone)}
+
+		awsServices.instances = []*ec2.Instance{&instance}
+
+		cloudID, err := test.cloudIDFunc(nodeName)
+
+		if test.expectError {
+			if err == nil {
+				t.Errorf("Expected to fail finding ExternalID due to missing tag, but found %v", cloudID)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("Error getting cloud ID: %v", err)
+				return
+			}
+
+			if cloudID != test.expectedCloudID {
+				t.Errorf("Expected %v but got %v", test.expectedCloudID, cloudID)
+			}
+		}
+	}
+}
+
+func TestUseProvidedNodeNameWhenUsingKubernetesNodeTag(t *testing.T) {
+	awsServices := NewFakeAWSServices()
+	c, err := newAWSCloud(strings.NewReader("[global]\nuseKubernetesNodeTag = true"), awsServices)
+	if err != nil {
+		t.Errorf("Error building aws cloud: %v", err)
+		return
+	}
+
+	nodeName := "node-01"
+	currentNodeName, err := c.CurrentNodeName(nodeName)
+
+	if (err != nil) {
+		t.Errorf("Failed getting current node name: %v", err)
+		return
+	}
+
+	if (currentNodeName != nodeName) {
+		t.Errorf("Expected current node name to match provided %v, but was %v", nodeName, currentNodeName)
 	}
 }
