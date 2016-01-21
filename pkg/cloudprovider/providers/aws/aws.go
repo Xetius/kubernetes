@@ -49,6 +49,7 @@ const ProviderName = "aws"
 
 // The tag name we use to differentiate multiple logically independent clusters running in the same AZ
 const TagNameKubernetesCluster = "KubernetesCluster"
+const TagNameKubernetesNode = "KubernetesNode"
 
 // We sometimes read to see if something exists; then try to create it if we didn't find it
 // This can fail once in a consistent system if done in parallel
@@ -195,6 +196,8 @@ type AWSCloudConfig struct {
 		Zone string
 
 		KubernetesClusterTag string
+
+		UseKubernetesNodeTag bool
 	}
 }
 
@@ -275,6 +278,10 @@ func (self *AWSCloud) AddSSHKeyToAllInstances(user string, keyData []byte) error
 }
 
 func (a *AWSCloud) CurrentNodeName(hostname string) (string, error) {
+	if a.cfg.Global.UseKubernetesNodeTag {
+		return hostname, nil
+	}
+
 	selfInstance, err := a.getSelfAWSInstance()
 	if err != nil {
 		return "", err
@@ -2083,10 +2090,18 @@ func (a *AWSCloud) getInstancesByNodeNames(nodeNames []string) ([]*ec2.Instance,
 // Returns the instance with the specified node name
 // Returns nil if it does not exist
 func (a *AWSCloud) findInstanceByNodeName(nodeName string) (*ec2.Instance, error) {
+	var filterKey string
+	if (a.cfg.Global.UseKubernetesNodeTag) {
+		filterKey = "tag:" + TagNameKubernetesNode
+	} else {
+		filterKey = "private-dns-name"
+	}
+
 	filters := []*ec2.Filter{
-		newEc2Filter("private-dns-name", nodeName),
+		newEc2Filter(filterKey, nodeName),
 	}
 	filters = a.addFilters(filters)
+
 	request := &ec2.DescribeInstancesInput{
 		Filters: filters,
 	}
