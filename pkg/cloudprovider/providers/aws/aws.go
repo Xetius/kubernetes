@@ -1601,6 +1601,14 @@ func (s *AWSCloud) createTags(request *ec2.CreateTagsInput) (*ec2.CreateTagsOutp
 	}
 }
 
+func findSubnetIDs(instances []*ec2.Instance) []string {
+	subnetIDs := []string{}
+	for _, instance := range instances {
+		subnetIDs = append(subnetIDs, *instance.SubnetId)
+	}
+	return subnetIDs
+}
+
 // EnsureTCPLoadBalancer implements TCPLoadBalancer.EnsureTCPLoadBalancer
 // TODO(justinsb) It is weird that these take a region.  I suspect it won't work cross-region anwyay.
 func (s *AWSCloud) EnsureTCPLoadBalancer(name, region string, publicIP net.IP, ports []*api.ServicePort, hosts []string, affinity api.ServiceAffinity) (*api.LoadBalancerStatus, error) {
@@ -1634,33 +1642,7 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(name, region string, publicIP net.IP, p
 	}
 
 	// Construct list of configured subnets
-	subnetIDs := []string{}
-	{
-		request := &ec2.DescribeSubnetsInput{}
-		filters := []*ec2.Filter{}
-		filters = append(filters, newEc2Filter("vpc-id", orEmpty(vpc.VpcId)))
-		// Note, this will only return subnets tagged with the cluster identifier for this Kubernetes cluster.
-		// In the case where an AZ has public & private subnets per AWS best practices, the deployment should ensure
-		// only the public subnet (where the ELB will go) is so tagged.
-		filters = s.addFilters(filters)
-		request.Filters = filters
-
-		subnets, err := s.ec2.DescribeSubnets(request)
-		if err != nil {
-			glog.Error("error describing subnets: ", err)
-			return nil, err
-		}
-
-		//	zones := []string{}
-		for _, subnet := range subnets {
-			subnetIDs = append(subnetIDs, orEmpty(subnet.SubnetId))
-			if !strings.HasPrefix(orEmpty(subnet.AvailabilityZone), region) {
-				glog.Error("found AZ that did not match region", orEmpty(subnet.AvailabilityZone), " vs ", region)
-				return nil, fmt.Errorf("invalid AZ for region")
-			}
-			//		zones = append(zones, subnet.AvailabilityZone)
-		}
-	}
+	subnetIDs := findSubnetIDs(instances)
 
 	// Create a security group for the load balancer
 	var securityGroupID string
