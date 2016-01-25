@@ -832,3 +832,28 @@ func TestUseProvidedNodeNameWhenUsingKubernetesNodeTag(t *testing.T) {
 		t.Errorf("Expected current node name to match provided %v, but was %v", nodeName, currentNodeName)
 	}
 }
+
+func TestFindSubnetIDs(t *testing.T) {
+
+	expectedIds := []string {"id1", "id2"}
+
+	instances := []*ec2.Instance{
+		&ec2.Instance{SubnetId:&expectedIds[0]},
+		&ec2.Instance{SubnetId:&expectedIds[1]},
+	}
+
+	subnetIds := findSubnetIDs(instances)
+
+	if (len(expectedIds) != len(subnetIds)) {
+		t.Errorf("Expected arrays to have same length")
+		return
+
+	}
+
+	for i, expectedId := range expectedIds {
+		if expectedId != subnetIds[i] {
+			t.Errorf("Expected subnet id %v to match %v", expectedId, subnetIds[i])
+			return
+		}
+	}
+}
