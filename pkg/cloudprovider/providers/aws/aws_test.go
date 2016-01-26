@@ -271,7 +271,7 @@ func instanceMatchesFilter(instance *ec2.Instance, filter *ec2.Filter) bool {
 		return contains(filter.Values, *instance.PrivateDnsName)
 	}
 
-	if name == "tag:" + TagNameKubernetesNode {
+	if name == "tag:"+TagNameKubernetesNode {
 		for _, tag := range instance.Tags {
 			if *tag.Key == TagNameKubernetesNode {
 				return contains(filter.Values, *tag.Value)
@@ -280,7 +280,7 @@ func instanceMatchesFilter(instance *ec2.Instance, filter *ec2.Filter) bool {
 		return false
 	}
 
-	if name == "tag:" + TagNameKubernetesCluster {
+	if name == "tag:"+TagNameKubernetesCluster {
 		for _, tag := range instance.Tags {
 			if *tag.Key == TagNameKubernetesCluster {
 				return contains(filter.Values, *tag.Value)
@@ -498,7 +498,7 @@ func mockInstancesResp(instances []*ec2.Instance) *AWSCloud {
 		awsServices:      awsServices,
 		ec2:              awsServices.ec2,
 		availabilityZone: awsServices.availabilityZone,
-		cfg:		  &AWSCloudConfig{},
+		cfg:              &AWSCloudConfig{},
 	}
 }
 
@@ -723,7 +723,6 @@ func TestLoadBalancerMatchesClusterRegion(t *testing.T) {
 	}
 }
 
-
 func TestUseKubernetesNodeTagForCloudID(t *testing.T) {
 	instanceId := "i-node-tagged"
 	nodeName := "node-01"
@@ -736,18 +735,18 @@ func TestUseKubernetesNodeTagForCloudID(t *testing.T) {
 	}
 
 	tests := []struct {
-		name string
-		cloudIDFunc func(string) (string, error)
-		tags []*ec2.Tag
+		name            string
+		cloudIDFunc     func(string) (string, error)
+		tags            []*ec2.Tag
 		expectedCloudID string
-		expectError bool
+		expectError     bool
 	}{
 		{
 			"Node name tag is set for ExternalID",
 			c.ExternalID,
 			[]*ec2.Tag{
-				&ec2.Tag{Key:aws.String(TagNameKubernetesNode), Value:aws.String(nodeName)},
-				&ec2.Tag{Key:aws.String(TagNameKubernetesCluster), Value:aws.String(TestClusterId)},
+				{Key: aws.String(TagNameKubernetesNode), Value: aws.String(nodeName)},
+				{Key: aws.String(TagNameKubernetesCluster), Value: aws.String(TestClusterId)},
 			},
 			instanceId,
 			false,
@@ -756,7 +755,7 @@ func TestUseKubernetesNodeTagForCloudID(t *testing.T) {
 			"Node name tag is not set for ExternalID",
 			c.ExternalID,
 			[]*ec2.Tag{
-				&ec2.Tag{Key:aws.String(TagNameKubernetesCluster), Value:aws.String(TestClusterId)},
+				{Key: aws.String(TagNameKubernetesCluster), Value: aws.String(TestClusterId)},
 			},
 			"",
 			true,
@@ -765,8 +764,8 @@ func TestUseKubernetesNodeTagForCloudID(t *testing.T) {
 			"Node name tag is set for InstanceID",
 			c.InstanceID,
 			[]*ec2.Tag{
-				&ec2.Tag{Key:aws.String(TagNameKubernetesNode), Value:aws.String(nodeName)},
-				&ec2.Tag{Key:aws.String(TagNameKubernetesCluster), Value:aws.String(TestClusterId)},
+				{Key: aws.String(TagNameKubernetesNode), Value: aws.String(nodeName)},
+				{Key: aws.String(TagNameKubernetesCluster), Value: aws.String(TestClusterId)},
 			},
 			"/" + awsServices.availabilityZone + "/" + instanceId,
 			false,
@@ -775,7 +774,7 @@ func TestUseKubernetesNodeTagForCloudID(t *testing.T) {
 			"Node name tag is not set for InstanceID",
 			c.InstanceID,
 			[]*ec2.Tag{
-				&ec2.Tag{Key:aws.String(TagNameKubernetesCluster), Value:aws.String(TestClusterId)},
+				{Key: aws.String(TagNameKubernetesCluster), Value: aws.String(TestClusterId)},
 			},
 			"",
 			true,
@@ -788,8 +787,8 @@ func TestUseKubernetesNodeTagForCloudID(t *testing.T) {
 		var instance ec2.Instance
 		instance.InstanceId = &instanceId
 		instance.Tags = test.tags
-		instance.State = &ec2.InstanceState{Code:aws.Int64(16), Name:aws.String("running")}
-		instance.Placement = &ec2.Placement{AvailabilityZone:aws.String(awsServices.availabilityZone)}
+		instance.State = &ec2.InstanceState{Code: aws.Int64(16), Name: aws.String("running")}
+		instance.Placement = &ec2.Placement{AvailabilityZone: aws.String(awsServices.availabilityZone)}
 
 		awsServices.instances = []*ec2.Instance{&instance}
 
@@ -823,12 +822,12 @@ func TestUseProvidedNodeNameWhenUsingKubernetesNodeTag(t *testing.T) {
 	nodeName := "node-01"
 	currentNodeName, err := c.CurrentNodeName(nodeName)
 
-	if (err != nil) {
+	if err != nil {
 		t.Errorf("Failed getting current node name: %v", err)
 		return
 	}
 
-	if (currentNodeName != nodeName) {
+	if currentNodeName != nodeName {
 		t.Errorf("Expected current node name to match provided %v, but was %v", nodeName, currentNodeName)
 	}
 }

@@ -2091,7 +2091,7 @@ func (a *AWSCloud) getInstancesByNodeNames(nodeNames []string) ([]*ec2.Instance,
 // Returns nil if it does not exist
 func (a *AWSCloud) findInstanceByNodeName(nodeName string) (*ec2.Instance, error) {
 	var filterKey string
-	if (a.cfg.Global.UseKubernetesNodeTag) {
+	if a.cfg.Global.UseKubernetesNodeTag {
 		filterKey = "tag:" + TagNameKubernetesNode
 	} else {
 		filterKey = "private-dns-name"
