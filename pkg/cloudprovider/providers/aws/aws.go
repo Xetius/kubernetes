@@ -1346,6 +1346,7 @@ func isEqualIntPointer(l, r *int64) bool {
 	}
 	return *l == *r
 }
+
 func isEqualStringPointer(l, r *string) bool {
 	if l == nil {
 		return r == nil
@@ -1356,27 +1357,27 @@ func isEqualStringPointer(l, r *string) bool {
 	return *l == *r
 }
 
-func isEqualIPPermission(l, r *ec2.IpPermission, compareGroupUserIDs bool) bool {
-	if !isEqualIntPointer(l.FromPort, r.FromPort) {
+func ipPermissionExists(newPermission, existing *ec2.IpPermission, compareGroupUserIDs bool) bool {
+	if !isEqualIntPointer(newPermission.FromPort, existing.FromPort) {
 		return false
 	}
-	if !isEqualIntPointer(l.ToPort, r.ToPort) {
+	if !isEqualIntPointer(newPermission.ToPort, existing.ToPort) {
 		return false
 	}
-	if !isEqualStringPointer(l.IpProtocol, r.IpProtocol) {
+	if !isEqualStringPointer(newPermission.IpProtocol, existing.IpProtocol) {
 		return false
 	}
-	if len(l.IpRanges) != len(r.IpRanges) {
+	if len(newPermission.IpRanges) != len(existing.IpRanges) {
 		return false
 	}
-	for j := range l.IpRanges {
-		if !isEqualStringPointer(l.IpRanges[j].CidrIp, r.IpRanges[j].CidrIp) {
+	for j := range newPermission.IpRanges {
+		if !isEqualStringPointer(newPermission.IpRanges[j].CidrIp, existing.IpRanges[j].CidrIp) {
 			return false
 		}
 	}
 
-	for _, leftPair := range l.UserIdGroupPairs {
-		for _, rightPair := range r.UserIdGroupPairs {
+	for _, leftPair := range newPermission.UserIdGroupPairs {
+		for _, rightPair := range existing.UserIdGroupPairs {
 			if isEqualUserGroupPair(leftPair, rightPair, compareGroupUserIDs) {
 				return true
 			}
@@ -1388,6 +1389,7 @@ func isEqualIPPermission(l, r *ec2.IpPermission, compareGroupUserIDs bool) bool 
 }
 
 func isEqualUserGroupPair(l, r *ec2.UserIdGroupPair, compareGroupUserIDs bool) bool {
+	glog.V(2).Infof("Comparing %v to %v", *l.GroupId, *r.GroupId)
 	if isEqualStringPointer(l.GroupId, r.GroupId) {
 		if compareGroupUserIDs {
 			if isEqualStringPointer(l.UserId, r.UserId) {
@@ -1428,7 +1430,7 @@ func (s *AWSCloud) ensureSecurityGroupIngress(securityGroupId string, addPermiss
 
 		found := false
 		for _, groupPermission := range group.IpPermissions {
-			if isEqualIPPermission(addPermission, groupPermission, hasUserID) {
+			if ipPermissionExists(addPermission, groupPermission, hasUserID) {
 				found = true
 				break
 			}
@@ -1483,8 +1485,8 @@ func (s *AWSCloud) removeSecurityGroupIngress(securityGroupId string, removePerm
 
 		var found *ec2.IpPermission
 		for _, groupPermission := range group.IpPermissions {
-			if isEqualIPPermission(groupPermission, removePermission, hasUserID) {
-				found = groupPermission
+			if ipPermissionExists(removePermission, groupPermission, hasUserID) {
+				found = removePermission
 				break
 			}
 		}

@@ -858,7 +858,7 @@ func TestFindSubnetIDs(t *testing.T) {
 	}
 }
 
-func TestIsEqualIPPermissionHandlesMultipleGroupIds(t *testing.T) {
+func TestIpPermissionExistsHandlesMultipleGroupIds(t *testing.T) {
 	oldIpPermission := ec2.IpPermission {
 		UserIdGroupPairs: []*ec2.UserIdGroupPair {
 			&ec2.UserIdGroupPair{GroupId: aws.String("firstGroupId")},
@@ -880,19 +880,18 @@ func TestIsEqualIPPermissionHandlesMultipleGroupIds(t *testing.T) {
 	}
 
 
-	equals := isEqualIPPermission(&existingIpPermission, &oldIpPermission, false)
+	equals := ipPermissionExists(&existingIpPermission, &oldIpPermission, false)
 	if !equals {
 		t.Errorf("Should have been considered equal since first is in the second array of groups")
 	}
 
-	equals = isEqualIPPermission(&newIpPermission, &oldIpPermission, false)
+	equals = ipPermissionExists(&newIpPermission, &oldIpPermission, false)
 	if equals {
 		t.Errorf("Should have not been considered equal since first is not in the second array of groups")
 	}
-
 }
 
-func TestIsEqualIPPermissionHandlesMultipleGroupIdsWithUserIds(t *testing.T) {
+func TestIpPermissionExistsHandlesMultipleGroupIdsWithUserIds(t *testing.T) {
 	oldIpPermission := ec2.IpPermission {
 		UserIdGroupPairs: []*ec2.UserIdGroupPair {
 			&ec2.UserIdGroupPair{GroupId: aws.String("firstGroupId"), UserId: aws.String("firstUserId")},
@@ -914,12 +913,12 @@ func TestIsEqualIPPermissionHandlesMultipleGroupIdsWithUserIds(t *testing.T) {
 	}
 
 
-	equals := isEqualIPPermission(&existingIpPermission, &oldIpPermission, true)
+	equals := ipPermissionExists(&existingIpPermission, &oldIpPermission, true)
 	if !equals {
 		t.Errorf("Should have been considered equal since first is in the second array of groups")
 	}
 
-	equals = isEqualIPPermission(&newIpPermission, &oldIpPermission, true)
+	equals = ipPermissionExists(&newIpPermission, &oldIpPermission, true)
 	if equals {
 		t.Errorf("Should have not been considered equal since first is not in the second array of groups")
 	}
