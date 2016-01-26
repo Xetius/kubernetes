@@ -835,16 +835,16 @@ func TestUseProvidedNodeNameWhenUsingKubernetesNodeTag(t *testing.T) {
 
 func TestFindSubnetIDs(t *testing.T) {
 
-	expectedIds := []string {"id1", "id2"}
+	expectedIds := []string{"id1", "id2"}
 
 	instances := []*ec2.Instance{
-		&ec2.Instance{SubnetId:&expectedIds[0]},
-		&ec2.Instance{SubnetId:&expectedIds[1]},
+		{SubnetId: &expectedIds[0]},
+		{SubnetId: &expectedIds[1]},
 	}
 
 	subnetIds := findSubnetIDs(instances)
 
-	if (len(expectedIds) != len(subnetIds)) {
+	if len(expectedIds) != len(subnetIds) {
 		t.Errorf("Expected arrays to have same length")
 		return
 
