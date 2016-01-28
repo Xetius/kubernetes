@@ -18,7 +18,6 @@ package servicecontroller
 
 import (
 	"fmt"
-	"net"
 	"sort"
 	"sync"
 	"time"

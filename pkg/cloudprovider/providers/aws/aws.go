@@ -1706,8 +1706,14 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(service *api.Service, hosts []string) (
 		listeners = append(listeners, listener)
 	}
 
+	// Determine whether to build an internal or internet-facing load balancer
+	createInternal := false
+	if service.ObjectMeta.Labels["kubernetes.io/aws-lb-internal"] == "true" {
+		createInternal = true
+	}
+
 	// Build the load balancer itself
-	loadBalancer, err := s.ensureLoadBalancer(name, listeners, subnetIDs, securityGroupIDs)
+	loadBalancer, err := s.ensureLoadBalancer(name, listeners, subnetIDs, securityGroupIDs, createInternal)
 	if err != nil {
 		return nil, err
 	}
