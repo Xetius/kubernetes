@@ -368,18 +368,30 @@ func (s *ServiceController) persistUpdate(service *api.Service) error {
 	return err
 }
 
-func (s *ServiceController) createLoadBalancer(service *api.Service) error {
-	ports, err := getPortsForLB(service)
-	if err != nil {
-		return err
+func tcpUnsupportedError() error {
+	return fmt.Errorf("external load balancers for non TCP services are not currently supported.")
+}
+
+func portsAreTCP(ports []api.ServicePort) bool {
+	for _, port := range ports {
+		if port.Protocol != api.ProtocolTCP {
+			return false
+		}
 	}
+	return true
+}
+
+func (s *ServiceController) createLoadBalancer(service *api.Service) error {
 	nodes, err := s.nodeLister.List()
 	if err != nil {
 		return err
 	}
-	name := s.loadBalancerName(service)
-	status, err := s.balancer.EnsureTCPLoadBalancer(name, s.zone.Region, net.ParseIP(service.Spec.LoadBalancerIP),
-		ports, hostsFromNodeList(&nodes), service.Spec.SessionAffinity)
+
+	if !portsAreTCP(service.Spec.Ports) {
+		return tcpUnsupportedError()
+	}
+
+	status, err := s.balancer.EnsureTCPLoadBalancer(service, hostsFromNodeList(&nodes))
 	if err != nil {
 		return err
 	} else {
@@ -482,14 +494,15 @@ func (s *ServiceController) loadBalancerName(service *api.Service) string {
 }
 
 func getPortsForLB(service *api.Service) ([]*api.ServicePort, error) {
+	// TODO: Support UDP. Remove the check from the API validation package once
+	// it's supported.
+	if !portsAreTCP(service.Spec.Ports) {
+		return nil, tcpUnsupportedError()
+	}
+
 	ports := []*api.ServicePort{}
 	for i := range service.Spec.Ports {
-		// TODO: Support UDP. Remove the check from the API validation package once
-		// it's supported.
 		sp := &service.Spec.Ports[i]
-		if sp.Protocol != api.ProtocolTCP {
-			return nil, fmt.Errorf("external load balancers for non TCP services are not currently supported.")
-		}
 		ports = append(ports, sp)
 	}
 	return ports, nil
