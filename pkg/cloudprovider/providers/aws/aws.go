@@ -1623,21 +1623,16 @@ func findSubnetIDs(instances []*ec2.Instance) []string {
 }
 
 // EnsureTCPLoadBalancer implements TCPLoadBalancer.EnsureTCPLoadBalancer
-// TODO(justinsb) It is weird that these take a region.  I suspect it won't work cross-region anwyay.
-func (s *AWSCloud) EnsureTCPLoadBalancer(name, region string, publicIP net.IP, ports []*api.ServicePort, hosts []string, affinity api.ServiceAffinity) (*api.LoadBalancerStatus, error) {
-	glog.V(2).Infof("EnsureTCPLoadBalancer(%v, %v, %v, %v, %v)", name, region, publicIP, ports, hosts)
+func (s *AWSCloud) EnsureTCPLoadBalancer(service *api.Service, hosts []string) (*api.LoadBalancerStatus, error) {
+	glog.V(2).Infof("EnsureTCPLoadBalancer(%v, %v)", service, hosts)
 
-	if region != s.region {
-		return nil, fmt.Errorf("requested load balancer region '%s' does not match cluster region '%s'", region, s.region)
-	}
-
-	if affinity != api.ServiceAffinityNone {
+	if service.Spec.SessionAffinity != api.ServiceAffinityNone {
 		// ELB supports sticky sessions, but only when configured for HTTP/HTTPS
-		return nil, fmt.Errorf("unsupported load balancer affinity: %v", affinity)
+		return nil, fmt.Errorf("unsupported load balancer affinity: %v", service.Spec.SessionAffinity)
 	}
 
-	if publicIP != nil {
-		return nil, fmt.Errorf("publicIP cannot be specified for AWS ELB")
+	if service.Spec.LoadBalancerIP != "" {
+		return nil, fmt.Errorf("LoadBalancerIP cannot be specified for AWS ELB")
 	}
 
 	instances, err := s.getInstancesByNodeNames(hosts)
@@ -1657,6 +1652,8 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(name, region string, publicIP net.IP, p
 	// Construct list of configured subnets
 	subnetIDs := findSubnetIDs(instances)
 
+	name := cloudprovider.GetLoadBalancerName(service)
+
 	// Create a security group for the load balancer
 	var securityGroupID string
 	{
@@ -1669,7 +1666,7 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(name, region string, publicIP net.IP, p
 		}
 
 		permissions := []*ec2.IpPermission{}
-		for _, port := range ports {
+		for _, port := range service.Spec.Ports {
 			portInt64 := int64(port.Port)
 			protocol := strings.ToLower(string(port.Protocol))
 			sourceIp := "0.0.0.0/0"
@@ -1691,7 +1688,7 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(name, region string, publicIP net.IP, p
 
 	// Figure out what mappings we want on the load balancer
 	listeners := []*elb.Listener{}
-	for _, port := range ports {
+	for _, port := range service.Spec.Ports {
 		if port.NodePort == 0 {
 			glog.Errorf("Ignoring port without NodePort defined: %v", port)
 			continue
@@ -1709,8 +1706,14 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(name, region string, publicIP net.IP, p
 		listeners = append(listeners, listener)
 	}
 
+	// Determine whether to build an internal or internet-facing load balancer
+	createInternal := false
+	if service.ObjectMeta.Labels["kubernetes.io/aws-lb-internal"] == "true" {
+		createInternal = true
+	}
+
 	// Build the load balancer itself
-	loadBalancer, err := s.ensureLoadBalancer(name, listeners, subnetIDs, securityGroupIDs)
+	loadBalancer, err := s.ensureLoadBalancer(name, listeners, subnetIDs, securityGroupIDs, createInternal)
 	if err != nil {
 		return nil, err
 	}
@@ -2086,7 +2089,7 @@ func (a *AWSCloud) getInstancesByNodeNames(nodeNames []string) ([]*ec2.Instance,
 // Returns nil if it does not exist
 func (a *AWSCloud) findInstanceByNodeName(nodeName string) (*ec2.Instance, error) {
 	var filterKey string
-	if (a.cfg.Global.UseKubernetesNodeTag) {
+	if a.cfg.Global.UseKubernetesNodeTag {
 		filterKey = "tag:" + TagNameKubernetesNode
 	} else {
 		filterKey = "private-dns-name"

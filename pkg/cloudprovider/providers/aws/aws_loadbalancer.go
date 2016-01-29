@@ -27,7 +27,7 @@ import (
 	"k8s.io/kubernetes/pkg/util/sets"
 )
 
-func (s *AWSCloud) ensureLoadBalancer(name string, listeners []*elb.Listener, subnetIDs []string, securityGroupIDs []string) (*elb.LoadBalancerDescription, error) {
+func (s *AWSCloud) ensureLoadBalancer(name string, listeners []*elb.Listener, subnetIDs []string, securityGroupIDs []string, internal bool) (*elb.LoadBalancerDescription, error) {
 	loadBalancer, err := s.describeLoadBalancer(name)
 	if err != nil {
 		return nil, err
@@ -41,6 +41,10 @@ func (s *AWSCloud) ensureLoadBalancer(name string, listeners []*elb.Listener, su
 
 		createRequest.Listeners = listeners
 
+		if internal {
+			createRequest.Scheme = aws.String("internal")
+		}
+
 		// We are supposed to specify one subnet per AZ.
 		// TODO: What happens if we have more than one subnet per AZ?
 		createRequest.Subnets = stringPointerArray(subnetIDs)
@@ -50,6 +54,7 @@ func (s *AWSCloud) ensureLoadBalancer(name string, listeners []*elb.Listener, su
 		glog.Info("Creating load balancer with name: ", name)
 		_, err := s.elb.CreateLoadBalancer(createRequest)
 		if err != nil {
+			glog.Infof("Failed creating load balancer for %v", createRequest)
 			return nil, err
 		}
 		dirty = true
