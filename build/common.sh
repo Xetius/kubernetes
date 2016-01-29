@@ -23,6 +23,8 @@ DOCKER_OPTS=${DOCKER_OPTS:-""}
 DOCKER_NATIVE=${DOCKER_NATIVE:-""}
 DOCKER=(docker ${DOCKER_OPTS})
 DOCKER_HOST=${DOCKER_HOST:-""}
+readonly DOCKER_MACHINE_NAME=${DOCKER_MACHINE_NAME:-"kube-dev"}
+readonly DOCKER_MACHINE_DRIVER=${DOCKER_MACHINE_DRIVER:-"virtualbox"}
 
 KUBE_ROOT=$(dirname "${BASH_SOURCE}")/..
 cd "${KUBE_ROOT}"
@@ -46,13 +48,9 @@ readonly KUBE_GCS_DELETE_EXISTING="${KUBE_GCS_DELETE_EXISTING:-n}"
 
 # Constants
 readonly KUBE_BUILD_IMAGE_REPO=kube-build
-# These get set in verify_prereqs with a unique hash based on KUBE_ROOT
-# KUBE_BUILD_IMAGE_TAG=<hash>
-# KUBE_BUILD_IMAGE="${KUBE_BUILD_IMAGE_REPO}:${KUBE_BUILD_IMAGE_TAG}"
-# KUBE_BUILD_CONTAINER_NAME=kube-build-<hash>
-readonly KUBE_BUILD_IMAGE_CROSS_TAG=cross
+readonly KUBE_BUILD_GOLANG_VERSION=1.4.2
+readonly KUBE_BUILD_IMAGE_CROSS_TAG="cross-${KUBE_BUILD_GOLANG_VERSION}-1"
 readonly KUBE_BUILD_IMAGE_CROSS="${KUBE_BUILD_IMAGE_REPO}:${KUBE_BUILD_IMAGE_CROSS_TAG}"
-readonly KUBE_BUILD_GOLANG_VERSION=1.4
 # KUBE_BUILD_DATA_CONTAINER_NAME=kube-build-data-<hash>
 
 # Here we map the output directories across both the local and remote _output
@@ -160,18 +158,22 @@ function kube::build::docker_available_on_osx() {
 
 function kube::build::prepare_docker_machine() {
   kube::log::status "docker-machine was found."
-  docker-machine inspect kube-dev >/dev/null || {
+  docker-machine inspect "${DOCKER_MACHINE_NAME}" >/dev/null || {
     kube::log::status "Creating a machine to build Kubernetes"
-    docker-machine create -d virtualbox kube-dev > /dev/null || {
+    docker-machine create --driver "${DOCKER_MACHINE_DRIVER}" "${DOCKER_MACHINE_NAME}" > /dev/null || {
       kube::log::error "Something went wrong creating a machine."
       kube::log::error "Try the following: "
-      kube::log::error "docker-machine create -d <provider> kube-dev"
+      kube::log::error "docker-machine create -d ${DOCKER_MACHINE_DRIVER} ${DOCKER_MACHINE_NAME}"
       return 1
     }
   }
-  docker-machine start kube-dev > /dev/null
-  eval $(docker-machine env kube-dev)
-  kube::log::status "A Docker host using docker-machine named kube-dev is ready to go!"
+  docker-machine start "${DOCKER_MACHINE_NAME}" > /dev/null
+  # it takes `docker-machine env` a few seconds to work if the machine was just started
+  while ! docker-machine env ${DOCKER_MACHINE_NAME} &> /dev/null; do
+    sleep 1
+  done
+  eval $(docker-machine env "${DOCKER_MACHINE_NAME}")
+  kube::log::status "A Docker host using docker-machine named '${DOCKER_MACHINE_NAME}' is ready to go!"
   return 0
 }
 
@@ -218,10 +220,10 @@ function kube::build::ensure_docker_daemon_connectivity {
       echo "Possible causes:"
       echo "  - On Mac OS X, DOCKER_HOST hasn't been set. You may need to: "
       echo "    - Create and start your VM using docker-machine or boot2docker: "
-      echo "      - docker-machine create -d <driver> kube-dev"
+      echo "      - docker-machine create -d ${DOCKER_MACHINE_DRIVER} ${DOCKER_MACHINE_NAME}"
       echo "      - boot2docker init && boot2docker start"
       echo "    - Set your environment variables using: "
-      echo "      - eval \$(docker-machine env kube-dev)"
+      echo "      - eval \$(docker-machine env ${DOCKER_MACHINE_NAME})"
       echo "      - \$(boot2docker shellinit)"
       echo "  - On Linux, user isn't in 'docker' group.  Add and relogin."
       echo "    - Something like 'sudo usermod -a -G docker ${USER-user}'"
@@ -411,7 +413,7 @@ function kube::build::build_image_built() {
 function kube::build::ensure_golang() {
   kube::build::docker_image_exists golang "${KUBE_BUILD_GOLANG_VERSION}" || {
     [[ ${KUBE_SKIP_CONFIRMATIONS} =~ ^[yY]$ ]] || {
-      echo "You don't have a local copy of the golang docker image. This image is 450MB."
+      echo "You don't have a local copy of the golang:${KUBE_BUILD_GOLANG_VERSION} docker image. This image is 450MB."
       read -p "Download it now? [y/n] " -r
       echo
       [[ $REPLY =~ ^[yY]$ ]] || {
@@ -466,6 +468,7 @@ function kube::build::build_image() {
   kube::version::save_version_vars "${build_context_dir}/kube-version-defs"
 
   cp build/build-image/Dockerfile ${build_context_dir}/Dockerfile
+  sed -i "s/KUBE_BUILD_IMAGE_CROSS/${KUBE_BUILD_IMAGE_CROSS}/" ${build_context_dir}/Dockerfile
   # We don't want to force-pull this image because it's based on a local image
   # (see kube::build::build_image_cross), not upstream.
   kube::build::docker_build "${KUBE_BUILD_IMAGE}" "${build_context_dir}" 'false'
