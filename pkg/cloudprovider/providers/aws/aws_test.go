@@ -26,6 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elb"
+	"github.com/aws/aws-sdk-go/service/route53"
 
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/golang/glog"
@@ -115,6 +116,7 @@ type FakeAWSServices struct {
 	ec2      *FakeEC2
 	elb      *FakeELB
 	asg      *FakeASG
+	r53      *FakeR53
 	metadata *FakeMetadata
 }
 
@@ -124,6 +126,7 @@ func NewFakeAWSServices() *FakeAWSServices {
 	s.ec2 = &FakeEC2{aws: s}
 	s.elb = &FakeELB{aws: s}
 	s.asg = &FakeASG{aws: s}
+	s.r53 = &FakeR53{aws: s}
 	s.metadata = &FakeMetadata{aws: s}
 
 	s.networkInterfacesMacs = []string{"aa:bb:cc:dd:ee:00", "aa:bb:cc:dd:ee:01"}
@@ -164,6 +167,10 @@ func (s *FakeAWSServices) LoadBalancing(region string) (ELB, error) {
 
 func (s *FakeAWSServices) Autoscaling(region string) (ASG, error) {
 	return s.asg, nil
+}
+
+func (s *FakeAWSServices) Route53(region string) (R53, error) {
+	return s.r53, nil
 }
 
 func (s *FakeAWSServices) Metadata() (EC2Metadata, error) {
@@ -490,6 +497,31 @@ func (a *FakeASG) UpdateAutoScalingGroup(*autoscaling.UpdateAutoScalingGroupInpu
 
 func (a *FakeASG) DescribeAutoScalingGroups(*autoscaling.DescribeAutoScalingGroupsInput) (*autoscaling.DescribeAutoScalingGroupsOutput, error) {
 	panic("Not implemented")
+}
+
+type FakeR53 struct {
+	aws *FakeAWSServices
+}
+
+const FakeHostedZoneName = "k8s.api.com"
+const FakeHostedZoneId = "FAKEZONEID"
+
+func (r53 *FakeR53) ChangeResourceRecordSets(input *route53.ChangeResourceRecordSetsInput) (*route53.ChangeResourceRecordSetsOutput, error) {
+	if *input.HostedZoneId == FakeHostedZoneId {
+		output := route53.ChangeResourceRecordSetsOutput{}
+		return &output, nil
+	}
+	return nil, fmt.Errorf("unrecognized resource record sets: %v", input.String())
+}
+
+func (r53 *FakeR53) ListHostedZonesByName(input *route53.ListHostedZonesByNameInput) (*route53.ListHostedZonesByNameOutput, error) {
+	if *input.DNSName == FakeHostedZoneName+"." {
+		return &route53.ListHostedZonesByNameOutput{DNSName: input.DNSName, HostedZones: []*route53.HostedZone{{
+			Id:   aws.String(FakeHostedZoneId),
+			Name: input.DNSName,
+		}}}, nil
+	}
+	return nil, fmt.Errorf("unrecognized hostzone name %v", input.String())
 }
 
 func mockInstancesResp(instances []*ec2.Instance) *AWSCloud {
@@ -913,5 +945,24 @@ func TestIpPermissionExistsHandlesMultipleGroupIdsWithUserIds(t *testing.T) {
 	equals = ipPermissionExists(&newIpPermission, &oldIpPermission, true)
 	if equals {
 		t.Errorf("Should have not been considered equal since first is not in the second array of groups")
+	}
+}
+
+func TestAddLoadBalancerDnsEntry(t *testing.T) {
+	awsServices := NewFakeAWSServices()
+	c, err := newAWSCloud(strings.NewReader("[global]"), awsServices)
+	if err != nil {
+		t.Errorf("Error building aws cloud: %v", err)
+		return
+	}
+
+	elbHostname := aws.String("abcde012345.internal")
+	serviceName := "myservice"
+	namespace := "mynamespace"
+	clusterName := "mycluster"
+
+	err = c.addLoadBalancerDnsEntry(elbHostname, FakeHostedZoneName, serviceName, namespace, clusterName)
+	if err != nil {
+		t.Errorf("Error adding dns entry: %v", err)
 	}
 }
