@@ -1708,7 +1708,7 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(service *api.Service, hosts []string) (
 
 	// Determine whether to build an internal or internet-facing load balancer
 	createInternal := false
-	if service.ObjectMeta.Labels["kubernetes.io/aws-lb-internal"] == "true" {
+	if service.Labels["kubernetes.io/aws-lb-internal"] == "true" {
 		createInternal = true
 	}
 
