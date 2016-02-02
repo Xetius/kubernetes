@@ -504,14 +504,33 @@ type FakeR53 struct {
 }
 
 const FakeHostedZoneName = "k8s.api.com"
+const FakeElbHostname = "abcde012345.internal"
 const FakeHostedZoneId = "FAKEZONEID"
+const FakeClusterName = "mycluster"
+const FakeServiceName = "myservice"
+const FakeNamespace = "mynamespace"
 
 func (r53 *FakeR53) ChangeResourceRecordSets(input *route53.ChangeResourceRecordSetsInput) (*route53.ChangeResourceRecordSetsOutput, error) {
-	if *input.HostedZoneId == FakeHostedZoneId {
-		output := route53.ChangeResourceRecordSetsOutput{}
-		return &output, nil
+	if *input.HostedZoneId != FakeHostedZoneId {
+		return nil, fmt.Errorf("hosted zone id didn't match expected %v: %v", FakeHostedZoneId, input.String())
 	}
-	return nil, fmt.Errorf("unrecognized resource record sets: %v", input.String())
+
+	expectedCname := fmt.Sprintf("%v-%v-%v.%v.", FakeServiceName, FakeNamespace, FakeClusterName, FakeHostedZoneName)
+	change := input.ChangeBatch.Changes[0]
+	if *change.ResourceRecordSet.Name != expectedCname {
+		return nil, fmt.Errorf("cname didn't match expected %v: %v", expectedCname, input.String())
+	}
+
+	if *change.ResourceRecordSet.ResourceRecords[0].Value != FakeElbHostname {
+		return nil, fmt.Errorf("cname value didn't match expected %v: %v", FakeElbHostname, input.String())
+	}
+
+	if *change.Action != "UPSERT" && *change.Action != "DELETE" {
+		return nil, fmt.Errorf("action wasn't upsert or delete: %v", input.String())
+	}
+
+	output := route53.ChangeResourceRecordSetsOutput{}
+	return &output, nil
 }
 
 func (r53 *FakeR53) ListHostedZonesByName(input *route53.ListHostedZonesByNameInput) (*route53.ListHostedZonesByNameOutput, error) {
@@ -943,20 +962,28 @@ func TestIpPermissionExistsHandlesMultipleGroupIdsWithUserIds(t *testing.T) {
 	}
 }
 
-func TestAddLoadBalancerDnsEntry(t *testing.T) {
+func TestUpdateLoadBalancerCname(t *testing.T) {
 	awsServices := NewFakeAWSServices()
-	c, err := newAWSCloud(strings.NewReader("[global]"), awsServices)
+	config := fmt.Sprintf("[global]\nKubernetesClusterTag = %v", FakeClusterName)
+	c, err := newAWSCloud(strings.NewReader(config), awsServices)
 	if err != nil {
 		t.Errorf("Error building aws cloud: %v", err)
 		return
 	}
 
-	elbHostname := aws.String("abcde012345.internal")
-	serviceName := "myservice"
-	namespace := "mynamespace"
-	clusterName := "mycluster"
+	elbHostname := aws.String(FakeElbHostname)
+	service := api.Service{ObjectMeta: api.ObjectMeta{
+		Name:      FakeServiceName,
+		Namespace: FakeNamespace,
+		Labels:    map[string]string{LabelLoadBalancerCnameZone: FakeHostedZoneName},
+	}}
 
-	err = c.addLoadBalancerDnsEntry(elbHostname, FakeHostedZoneName, serviceName, namespace, clusterName)
+	err = c.addLoadBalancerCnameEntry(&service, elbHostname)
+	if err != nil {
+		t.Errorf("Error adding dns entry: %v", err)
+	}
+
+	err = c.removeLoadBalancerCnameEntry(&service, elbHostname)
 	if err != nil {
 		t.Errorf("Error adding dns entry: %v", err)
 	}

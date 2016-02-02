@@ -25,8 +25,21 @@ import (
 	"github.com/aws/aws-sdk-go/service/elb"
 	"github.com/aws/aws-sdk-go/service/route53"
 	"github.com/golang/glog"
+	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/util/sets"
 )
+
+// Labels for load balancer configuration
+const LabelLoadBalancerInternal = "kubernetes.io/aws-lb-internal"
+const LabelLoadBalancerCnameZone = "kubernetes.io/aws-lb-cname-zone"
+
+func isInternalLoadBalancer(service *api.Service) bool {
+	if service.Labels[LabelLoadBalancerInternal] == "true" {
+		return true
+	} else {
+		return false
+	}
+}
 
 func (s *AWSCloud) ensureLoadBalancer(name string, listeners []*elb.Listener, subnetIDs []string, securityGroupIDs []string, internal bool) (*elb.LoadBalancerDescription, error) {
 	loadBalancer, err := s.describeLoadBalancer(name)
@@ -303,13 +316,21 @@ func (s *AWSCloud) ensureLoadBalancerInstances(loadBalancerName string, lbInstan
 	return nil
 }
 
-func (s *AWSCloud) addLoadBalancerDnsEntry(dnsName *string, hostedZone string, serviceName string, namespace string, clusterName string) error {
+func getLoadBalancerHostedZone(service *api.Service) string {
+	if zone, ok := service.Labels[LabelLoadBalancerCnameZone]; ok {
+		return zone + "."
+	} else {
+		return ""
+	}
+}
+
+func (s *AWSCloud) updateLoadBalancerCnameEntry(service *api.Service, dnsName *string, action string) error {
+	hostedZone := getLoadBalancerHostedZone(service)
 	if hostedZone == "" {
 		return nil
 	}
 
-	qualifiedHostedZone := hostedZone + "."
-	zonesInput := &route53.ListHostedZonesByNameInput{DNSName: aws.String(qualifiedHostedZone)}
+	zonesInput := &route53.ListHostedZonesByNameInput{DNSName: aws.String(hostedZone)}
 	zones, err := s.r53.ListHostedZonesByName(zonesInput)
 	if err != nil {
 		return err
@@ -320,20 +341,20 @@ func (s *AWSCloud) addLoadBalancerDnsEntry(dnsName *string, hostedZone string, s
 	}
 
 	zone := zones.HostedZones[0]
-	if *zone.Name != qualifiedHostedZone {
+	if *zone.Name != hostedZone {
 		return fmt.Errorf("Could not find hosted zone with name %v.", hostedZone)
 	}
 
-	cname := fmt.Sprintf("%v-%v-%v.%v", serviceName, namespace, clusterName, *zone.Name)
+	cname := fmt.Sprintf("%v-%v-%v.%v", service.Name, service.Namespace, s.cfg.Global.KubernetesClusterTag, *zone.Name)
 
-	glog.Infof("Adding %v to hosted zone %v (%v)", cname, hostedZone, *zone.Id)
+	glog.Infof("%v %v to hosted zone %v (%v)", action, cname, hostedZone, *zone.Id)
 
 	recordSetsInput := &route53.ChangeResourceRecordSetsInput{
 		HostedZoneId: zone.Id,
 		ChangeBatch: &route53.ChangeBatch{
 			Changes: []*route53.Change{
 				{
-					Action: aws.String("UPSERT"),
+					Action: aws.String(action),
 					ResourceRecordSet: &route53.ResourceRecordSet{
 						Name:            aws.String(cname),
 						Type:            aws.String("CNAME"),
@@ -352,4 +373,12 @@ func (s *AWSCloud) addLoadBalancerDnsEntry(dnsName *string, hostedZone string, s
 	}
 
 	return nil
+}
+
+func (s *AWSCloud) addLoadBalancerCnameEntry(service *api.Service, dnsName *string) error {
+	return s.updateLoadBalancerCnameEntry(service, dnsName, "UPSERT")
+}
+
+func (s *AWSCloud) removeLoadBalancerCnameEntry(service *api.Service, dnsName *string) error {
+	return s.updateLoadBalancerCnameEntry(service, dnsName, "DELETE")
 }

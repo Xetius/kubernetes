@@ -1729,14 +1729,8 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(service *api.Service, hosts []string) (
 		listeners = append(listeners, listener)
 	}
 
-	// Determine whether to build an internal or internet-facing load balancer
-	createInternal := false
-	if service.Labels["kubernetes.io/aws-lb-internal"] == "true" {
-		createInternal = true
-	}
-
 	// Build the load balancer itself
-	loadBalancer, err := s.ensureLoadBalancer(name, listeners, subnetIDs, securityGroupIDs, createInternal)
+	loadBalancer, err := s.ensureLoadBalancer(name, listeners, subnetIDs, securityGroupIDs, isInternalLoadBalancer(service))
 	if err != nil {
 		return nil, err
 	}
@@ -1758,9 +1752,7 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(service *api.Service, hosts []string) (
 		return nil, err
 	}
 
-	hostedZone := service.Labels["kubernetes.io/aws-lb-cname-zone"]
-	clusterName := s.cfg.Global.KubernetesClusterTag
-	err = s.addLoadBalancerDnsEntry(loadBalancer.DNSName, hostedZone, service.Name, service.Namespace, clusterName)
+	err = s.addLoadBalancerCnameEntry(service, loadBalancer.DNSName)
 	if err != nil {
 		glog.Warningf("Error creating dns entry for load balancer: %v", err)
 		return nil, err
@@ -2024,6 +2016,14 @@ func (s *AWSCloud) EnsureTCPLoadBalancerDeleted(service *api.Service) error {
 			glog.V(2).Info("waiting for load-balancer to delete so we can delete security groups: ", name)
 
 			time.Sleep(5 * time.Second)
+		}
+	}
+
+	{
+		// Remove the DNS cname if defined
+		err := s.removeLoadBalancerCnameEntry(service, lb.DNSName)
+		if err != nil {
+			glog.Warningf("Error removing cname entry for %v: %v", name, err)
 		}
 	}
 
