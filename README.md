@@ -1,3 +1,21 @@
+# Cirrus fork
+
+This fork maintains our own patches against kubernetes until they reach upstream. We try to actively get them into upstream
+so we can reduce and even eliminate the need for a fork.
+
+Branches not yet in upstream are labeled `cirrus-1.1-feature`, to indicate they are against the cirrus-1.1 release. After
+review, they are merged into cirrus-1.1 which then gets tagged and released. The branches remain so we can remember
+what custom features we have.
+
+## Releasing cirrus fork
+
+Release the branch by running `make release`, tagging it with upstream tag as prefix,
+cirrus tag as suffix. E.g. `1.1.5-beta.0-cirrus.0`. Find the latest tag using
+`git describe --tags --abbrev=0`.
+
+Upload the tarball to the release page (https://github.com/sky-uk/cirrus-kubernetes/releases) in github, and
+change `kubernetes/group_vars/all.yml` to reference the new tarball.
+
 # Kubernetes
 
 [![GoDoc Widget]][GoDoc] [![Travis Widget]][Travis] [![Coverage Status Widget]][Coverage Status]
