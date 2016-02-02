@@ -1647,7 +1647,7 @@ func findSubnetIDs(instances []*ec2.Instance) []string {
 
 // EnsureTCPLoadBalancer implements TCPLoadBalancer.EnsureTCPLoadBalancer
 func (s *AWSCloud) EnsureTCPLoadBalancer(service *api.Service, hosts []string) (*api.LoadBalancerStatus, error) {
-	glog.V(2).Infof("EnsureTCPLoadBalancer(%v, %v)", service, hosts)
+	glog.V(2).Infof("EnsureTCPLoadBalancer(%v, %v)", *service, hosts)
 
 	if service.Spec.SessionAffinity != api.ServiceAffinityNone {
 		// ELB supports sticky sessions, but only when configured for HTTP/HTTPS
@@ -1939,10 +1939,8 @@ func (s *AWSCloud) updateInstanceSecurityGroupsForLoadBalancer(lb *elb.LoadBalan
 }
 
 // EnsureTCPLoadBalancerDeleted implements TCPLoadBalancer.EnsureTCPLoadBalancerDeleted.
-func (s *AWSCloud) EnsureTCPLoadBalancerDeleted(name, region string) error {
-	if region != s.region {
-		return fmt.Errorf("requested load balancer region '%s' does not match cluster region '%s'", region, s.region)
-	}
+func (s *AWSCloud) EnsureTCPLoadBalancerDeleted(service *api.Service) error {
+	name := cloudprovider.GetLoadBalancerName(service)
 
 	lb, err := s.describeLoadBalancer(name)
 	if err != nil {

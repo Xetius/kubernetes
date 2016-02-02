@@ -810,8 +810,15 @@ func (gce *GCECloud) UpdateTCPLoadBalancer(name, region string, hosts []string) 
 }
 
 // EnsureTCPLoadBalancerDeleted is an implementation of TCPLoadBalancer.EnsureTCPLoadBalancerDeleted.
-func (gce *GCECloud) EnsureTCPLoadBalancerDeleted(name, region string) error {
-	err := errors.AggregateGoroutines(
+func (gce *GCECloud) EnsureTCPLoadBalancerDeleted(service *api.Service) error {
+	name := cloudprovider.GetLoadBalancerName(service)
+	zone, err := gce.GetZone()
+	if err != nil {
+		return err
+	}
+	region := zone.Region
+
+	errs := errors.AggregateGoroutines(
 		func() error { return gce.deleteFirewall(name, region) },
 		// Even though we don't hold on to static IPs for load balancers, it's
 		// possible that EnsureTCPLoadBalancer left one around in a failed
@@ -829,8 +836,8 @@ func (gce *GCECloud) EnsureTCPLoadBalancerDeleted(name, region string) error {
 			return nil
 		},
 	)
-	if err != nil {
-		return errors.Flatten(err)
+	if errs != nil {
+		return errors.Flatten(errs)
 	}
 	return nil
 }

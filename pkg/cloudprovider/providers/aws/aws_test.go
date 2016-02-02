@@ -739,11 +739,6 @@ func TestLoadBalancerMatchesClusterRegion(t *testing.T) {
 		t.Errorf("Expected GetTCPLoadBalancer region mismatch error.")
 	}
 
-	err = c.EnsureTCPLoadBalancerDeleted("elb-name", badELBRegion)
-	if err == nil || err.Error() != errorMessage {
-		t.Errorf("Expected EnsureTCPLoadBalancerDeleted region mismatch error.")
-	}
-
 	err = c.UpdateTCPLoadBalancer("elb-name", badELBRegion, nil)
 	if err == nil || err.Error() != errorMessage {
 		t.Errorf("Expected UpdateTCPLoadBalancer region mismatch error.")
