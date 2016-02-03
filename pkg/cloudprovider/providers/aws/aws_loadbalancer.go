@@ -34,11 +34,7 @@ const LabelLoadBalancerInternal = "kubernetes.io/aws-lb-internal"
 const LabelLoadBalancerCnameZone = "kubernetes.io/aws-lb-cname-zone"
 
 func isInternalLoadBalancer(service *api.Service) bool {
-	if service.Labels[LabelLoadBalancerInternal] == "true" {
-		return true
-	} else {
-		return false
-	}
+	return service.Labels[LabelLoadBalancerInternal] == "true"
 }
 
 func (s *AWSCloud) ensureLoadBalancer(name string, listeners []*elb.Listener, subnetIDs []string, securityGroupIDs []string, internal bool) (*elb.LoadBalancerDescription, error) {
