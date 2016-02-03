@@ -296,6 +296,10 @@ func instanceMatchesFilter(instance *ec2.Instance, filter *ec2.Filter) bool {
 		return false
 	}
 
+	if name == "instance-state-name" {
+		return contains(filter.Values, *instance.State.Name)
+	}
+
 	panic("Unknown filter name: " + name)
 }
 
@@ -822,6 +826,15 @@ func TestUseKubernetesNodeTagForCloudID(t *testing.T) {
 		},
 	}
 
+	var deadInstance ec2.Instance
+	deadInstance.InstanceId = &instanceId
+	deadInstance.Tags = []*ec2.Tag{
+		{Key: aws.String(TagNameKubernetesNode), Value: aws.String(nodeName)},
+		{Key: aws.String(TagNameKubernetesCluster), Value: aws.String(TestClusterId)},
+	}
+	deadInstance.State = &ec2.InstanceState{Code: aws.Int64(48), Name: aws.String("terminated")}
+	deadInstance.Placement = &ec2.Placement{AvailabilityZone: aws.String(awsServices.availabilityZone)}
+
 	for _, test := range tests {
 		t.Logf("Running test case %s", test.name)
 
@@ -831,7 +844,7 @@ func TestUseKubernetesNodeTagForCloudID(t *testing.T) {
 		instance.State = &ec2.InstanceState{Code: aws.Int64(16), Name: aws.String("running")}
 		instance.Placement = &ec2.Placement{AvailabilityZone: aws.String(awsServices.availabilityZone)}
 
-		awsServices.instances = []*ec2.Instance{&instance}
+		awsServices.instances = []*ec2.Instance{&instance, &deadInstance}
 
 		cloudID, err := test.cloudIDFunc(nodeName)
 

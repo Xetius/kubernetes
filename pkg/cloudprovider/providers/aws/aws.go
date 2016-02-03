@@ -2126,6 +2126,7 @@ func (a *AWSCloud) findInstanceByNodeName(nodeName string) (*ec2.Instance, error
 
 	filters := []*ec2.Filter{
 		newEc2Filter(filterKey, nodeName),
+		newEc2Filter("instance-state-name", "running"),
 	}
 	filters = a.addFilters(filters)
 
