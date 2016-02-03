@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	ossys "os"
 	"regexp"
@@ -530,13 +529,15 @@ func (lb *LoadBalancer) GetTCPLoadBalancer(name, region string) (*api.LoadBalanc
 // a list of regions (from config) and query/create loadbalancers in
 // each region.
 
-func (lb *LoadBalancer) EnsureTCPLoadBalancer(name, region string, loadBalancerIP net.IP, ports []*api.ServicePort, hosts []string, affinity api.ServiceAffinity) (*api.LoadBalancerStatus, error) {
-	glog.V(4).Infof("EnsureTCPLoadBalancer(%v, %v, %v, %v, %v, %v)", name, region, loadBalancerIP, ports, hosts, affinity)
+func (lb *LoadBalancer) EnsureTCPLoadBalancer(service *api.Service, hosts []string) (*api.LoadBalancerStatus, error) {
+	glog.V(4).Infof("EnsureTCPLoadBalancer(%v, %v)", *service, hosts)
 
+	ports := service.Spec.Ports
 	if len(ports) > 1 {
 		return nil, fmt.Errorf("multiple ports are not yet supported in openstack load balancers")
 	}
 
+	affinity := service.Spec.SessionAffinity
 	var persistence *vips.SessionPersistence
 	switch affinity {
 	case api.ServiceAffinityNone:
@@ -547,8 +548,9 @@ func (lb *LoadBalancer) EnsureTCPLoadBalancer(name, region string, loadBalancerI
 		return nil, fmt.Errorf("unsupported load balancer affinity: %v", affinity)
 	}
 
+	name := cloudprovider.GetLoadBalancerName(service)
 	glog.V(2).Info("Checking if openstack load balancer already exists: %s", name)
-	_, exists, err := lb.GetTCPLoadBalancer(name, region)
+	_, exists, err := lb.GetTCPLoadBalancer(name, "")
 	if err != nil {
 		return nil, fmt.Errorf("error checking if openstack load balancer already exists: %v", err)
 	}
@@ -556,7 +558,7 @@ func (lb *LoadBalancer) EnsureTCPLoadBalancer(name, region string, loadBalancerI
 	// TODO: Implement a more efficient update strategy for common changes than delete & create
 	// In particular, if we implement hosts update, we can get rid of UpdateHosts
 	if exists {
-		err := lb.EnsureTCPLoadBalancerDeleted(name, region)
+		err := lb.EnsureTCPLoadBalancerDeleted(service)
 		if err != nil {
 			return nil, fmt.Errorf("error deleting existing openstack load balancer: %v", err)
 		}
@@ -623,8 +625,10 @@ func (lb *LoadBalancer) EnsureTCPLoadBalancer(name, region string, loadBalancerI
 		SubnetID:     lb.opts.SubnetId,
 		Persistence:  persistence,
 	}
-	if loadBalancerIP != nil {
-		createOpts.Address = loadBalancerIP.String()
+
+	loadBalancerIP := service.Spec.LoadBalancerIP
+	if loadBalancerIP != "" {
+		createOpts.Address = loadBalancerIP
 	}
 
 	vip, err := vips.Create(lb.network, createOpts).Extract()
@@ -703,8 +707,9 @@ func (lb *LoadBalancer) UpdateTCPLoadBalancer(name, region string, hosts []strin
 	return nil
 }
 
-func (lb *LoadBalancer) EnsureTCPLoadBalancerDeleted(name, region string) error {
-	glog.V(4).Infof("EnsureTCPLoadBalancerDeleted(%v, %v)", name, region)
+func (lb *LoadBalancer) EnsureTCPLoadBalancerDeleted(service *api.Service) error {
+	glog.V(4).Infof("EnsureTCPLoadBalancerDeleted(%v)", *service)
+	name := cloudprovider.GetLoadBalancerName(service)
 
 	vip, err := getVipByName(lb.network, name)
 	if err != nil && err != ErrNotFound {

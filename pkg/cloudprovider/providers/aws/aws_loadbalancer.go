@@ -23,11 +23,21 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elb"
+	"github.com/aws/aws-sdk-go/service/route53"
 	"github.com/golang/glog"
+	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/util/sets"
 )
 
-func (s *AWSCloud) ensureLoadBalancer(name string, listeners []*elb.Listener, subnetIDs []string, securityGroupIDs []string) (*elb.LoadBalancerDescription, error) {
+// Labels for load balancer configuration
+const LabelLoadBalancerInternal = "kubernetes.io/aws-lb-internal"
+const LabelLoadBalancerCnameZone = "kubernetes.io/aws-lb-cname-zone"
+
+func isInternalLoadBalancer(service *api.Service) bool {
+	return service.Labels[LabelLoadBalancerInternal] == "true"
+}
+
+func (s *AWSCloud) ensureLoadBalancer(name string, listeners []*elb.Listener, subnetIDs []string, securityGroupIDs []string, internal bool) (*elb.LoadBalancerDescription, error) {
 	loadBalancer, err := s.describeLoadBalancer(name)
 	if err != nil {
 		return nil, err
@@ -41,6 +51,10 @@ func (s *AWSCloud) ensureLoadBalancer(name string, listeners []*elb.Listener, su
 
 		createRequest.Listeners = listeners
 
+		if internal {
+			createRequest.Scheme = aws.String("internal")
+		}
+
 		// We are supposed to specify one subnet per AZ.
 		// TODO: What happens if we have more than one subnet per AZ?
 		createRequest.Subnets = stringPointerArray(subnetIDs)
@@ -50,6 +64,7 @@ func (s *AWSCloud) ensureLoadBalancer(name string, listeners []*elb.Listener, su
 		glog.Info("Creating load balancer with name: ", name)
 		_, err := s.elb.CreateLoadBalancer(createRequest)
 		if err != nil {
+			glog.Infof("Failed creating load balancer for %v", createRequest)
 			return nil, err
 		}
 		dirty = true
@@ -295,4 +310,71 @@ func (s *AWSCloud) ensureLoadBalancerInstances(loadBalancerName string, lbInstan
 	}
 
 	return nil
+}
+
+func getLoadBalancerHostedZone(service *api.Service) string {
+	if zone, ok := service.Labels[LabelLoadBalancerCnameZone]; ok {
+		return zone + "."
+	} else {
+		return ""
+	}
+}
+
+func (s *AWSCloud) updateLoadBalancerCnameEntry(service *api.Service, dnsName *string, action string) error {
+	hostedZone := getLoadBalancerHostedZone(service)
+	if hostedZone == "" {
+		return nil
+	}
+
+	zonesInput := &route53.ListHostedZonesByNameInput{DNSName: aws.String(hostedZone)}
+	zones, err := s.r53.ListHostedZonesByName(zonesInput)
+	if err != nil {
+		return err
+	}
+
+	if len(zones.HostedZones) == 0 {
+		return fmt.Errorf("No hosted zones found for account")
+	}
+
+	zone := zones.HostedZones[0]
+	if *zone.Name != hostedZone {
+		return fmt.Errorf("Could not find hosted zone with name %v.", hostedZone)
+	}
+
+	cname := fmt.Sprintf("%v-%v-%v.%v", service.Name, service.Namespace, s.cfg.Global.KubernetesClusterTag, *zone.Name)
+
+	glog.Infof("%v %v to hosted zone %v (%v)", action, cname, hostedZone, *zone.Id)
+
+	recordSetsInput := &route53.ChangeResourceRecordSetsInput{
+		HostedZoneId: zone.Id,
+		ChangeBatch: &route53.ChangeBatch{
+			Changes: []*route53.Change{
+				{
+					Action: aws.String(action),
+					ResourceRecordSet: &route53.ResourceRecordSet{
+						Name:            aws.String(cname),
+						Type:            aws.String("CNAME"),
+						TTL:             aws.Int64(600),
+						ResourceRecords: []*route53.ResourceRecord{{Value: dnsName}},
+					},
+				},
+			},
+		},
+	}
+
+	out, err := s.r53.ChangeResourceRecordSets(recordSetsInput)
+	if err != nil {
+		glog.Warningf("Failed to create dns entry: %v, %v", recordSetsInput.String(), out.String())
+		return err
+	}
+
+	return nil
+}
+
+func (s *AWSCloud) addLoadBalancerCnameEntry(service *api.Service, dnsName *string) error {
+	return s.updateLoadBalancerCnameEntry(service, dnsName, "UPSERT")
+}
+
+func (s *AWSCloud) removeLoadBalancerCnameEntry(service *api.Service, dnsName *string) error {
+	return s.updateLoadBalancerCnameEntry(service, dnsName, "DELETE")
 }

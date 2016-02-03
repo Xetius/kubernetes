@@ -26,6 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elb"
+	"github.com/aws/aws-sdk-go/service/route53"
 
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/golang/glog"
@@ -115,6 +116,7 @@ type FakeAWSServices struct {
 	ec2      *FakeEC2
 	elb      *FakeELB
 	asg      *FakeASG
+	r53      *FakeR53
 	metadata *FakeMetadata
 }
 
@@ -124,6 +126,7 @@ func NewFakeAWSServices() *FakeAWSServices {
 	s.ec2 = &FakeEC2{aws: s}
 	s.elb = &FakeELB{aws: s}
 	s.asg = &FakeASG{aws: s}
+	s.r53 = &FakeR53{aws: s}
 	s.metadata = &FakeMetadata{aws: s}
 
 	s.networkInterfacesMacs = []string{"aa:bb:cc:dd:ee:00", "aa:bb:cc:dd:ee:01"}
@@ -164,6 +167,10 @@ func (s *FakeAWSServices) LoadBalancing(region string) (ELB, error) {
 
 func (s *FakeAWSServices) Autoscaling(region string) (ASG, error) {
 	return s.asg, nil
+}
+
+func (s *FakeAWSServices) Route53(region string) (R53, error) {
+	return s.r53, nil
 }
 
 func (s *FakeAWSServices) Metadata() (EC2Metadata, error) {
@@ -492,6 +499,50 @@ func (a *FakeASG) DescribeAutoScalingGroups(*autoscaling.DescribeAutoScalingGrou
 	panic("Not implemented")
 }
 
+type FakeR53 struct {
+	aws *FakeAWSServices
+}
+
+const FakeHostedZoneName = "k8s.api.com"
+const FakeElbHostname = "abcde012345.internal"
+const FakeHostedZoneId = "FAKEZONEID"
+const FakeClusterName = "mycluster"
+const FakeServiceName = "myservice"
+const FakeNamespace = "mynamespace"
+
+func (r53 *FakeR53) ChangeResourceRecordSets(input *route53.ChangeResourceRecordSetsInput) (*route53.ChangeResourceRecordSetsOutput, error) {
+	if *input.HostedZoneId != FakeHostedZoneId {
+		return nil, fmt.Errorf("hosted zone id didn't match expected %v: %v", FakeHostedZoneId, input.String())
+	}
+
+	expectedCname := fmt.Sprintf("%v-%v-%v.%v.", FakeServiceName, FakeNamespace, FakeClusterName, FakeHostedZoneName)
+	change := input.ChangeBatch.Changes[0]
+	if *change.ResourceRecordSet.Name != expectedCname {
+		return nil, fmt.Errorf("cname didn't match expected %v: %v", expectedCname, input.String())
+	}
+
+	if *change.ResourceRecordSet.ResourceRecords[0].Value != FakeElbHostname {
+		return nil, fmt.Errorf("cname value didn't match expected %v: %v", FakeElbHostname, input.String())
+	}
+
+	if *change.Action != "UPSERT" && *change.Action != "DELETE" {
+		return nil, fmt.Errorf("action wasn't upsert or delete: %v", input.String())
+	}
+
+	output := route53.ChangeResourceRecordSetsOutput{}
+	return &output, nil
+}
+
+func (r53 *FakeR53) ListHostedZonesByName(input *route53.ListHostedZonesByNameInput) (*route53.ListHostedZonesByNameOutput, error) {
+	if *input.DNSName == FakeHostedZoneName+"." {
+		return &route53.ListHostedZonesByNameOutput{DNSName: input.DNSName, HostedZones: []*route53.HostedZone{{
+			Id:   aws.String(FakeHostedZoneId),
+			Name: input.DNSName,
+		}}}, nil
+	}
+	return nil, fmt.Errorf("unrecognized hostzone name %v", input.String())
+}
+
 func mockInstancesResp(instances []*ec2.Instance) *AWSCloud {
 	awsServices := NewFakeAWSServices().withInstances(instances)
 	return &AWSCloud{
@@ -707,16 +758,6 @@ func TestLoadBalancerMatchesClusterRegion(t *testing.T) {
 		t.Errorf("Expected GetTCPLoadBalancer region mismatch error.")
 	}
 
-	_, err = c.EnsureTCPLoadBalancer("elb-name", badELBRegion, nil, nil, nil, api.ServiceAffinityNone)
-	if err == nil || err.Error() != errorMessage {
-		t.Errorf("Expected EnsureTCPLoadBalancer region mismatch error.")
-	}
-
-	err = c.EnsureTCPLoadBalancerDeleted("elb-name", badELBRegion)
-	if err == nil || err.Error() != errorMessage {
-		t.Errorf("Expected EnsureTCPLoadBalancerDeleted region mismatch error.")
-	}
-
 	err = c.UpdateTCPLoadBalancer("elb-name", badELBRegion, nil)
 	if err == nil || err.Error() != errorMessage {
 		t.Errorf("Expected UpdateTCPLoadBalancer region mismatch error.")
@@ -829,5 +870,121 @@ func TestUseProvidedNodeNameWhenUsingKubernetesNodeTag(t *testing.T) {
 
 	if currentNodeName != nodeName {
 		t.Errorf("Expected current node name to match provided %v, but was %v", nodeName, currentNodeName)
+	}
+}
+
+func TestFindSubnetIDs(t *testing.T) {
+
+	expectedIds := []string{"id1", "id2"}
+
+	instances := []*ec2.Instance{
+		{SubnetId: &expectedIds[0]},
+		{SubnetId: &expectedIds[1]},
+	}
+
+	subnetIds := findSubnetIDs(instances)
+
+	if len(expectedIds) != len(subnetIds) {
+		t.Errorf("Expected arrays to have same length")
+		return
+
+	}
+
+	for i, expectedId := range expectedIds {
+		if expectedId != subnetIds[i] {
+			t.Errorf("Expected subnet id %v to match %v", expectedId, subnetIds[i])
+			return
+		}
+	}
+}
+
+func TestIpPermissionExistsHandlesMultipleGroupIds(t *testing.T) {
+	oldIpPermission := ec2.IpPermission{
+		UserIdGroupPairs: []*ec2.UserIdGroupPair{
+			{GroupId: aws.String("firstGroupId")},
+			{GroupId: aws.String("secondGroupId")},
+			{GroupId: aws.String("thirdGroupId")},
+		},
+	}
+
+	existingIpPermission := ec2.IpPermission{
+		UserIdGroupPairs: []*ec2.UserIdGroupPair{
+			{GroupId: aws.String("secondGroupId")},
+		},
+	}
+
+	newIpPermission := ec2.IpPermission{
+		UserIdGroupPairs: []*ec2.UserIdGroupPair{
+			{GroupId: aws.String("fourthGroupId")},
+		},
+	}
+
+	equals := ipPermissionExists(&existingIpPermission, &oldIpPermission, false)
+	if !equals {
+		t.Errorf("Should have been considered equal since first is in the second array of groups")
+	}
+
+	equals = ipPermissionExists(&newIpPermission, &oldIpPermission, false)
+	if equals {
+		t.Errorf("Should have not been considered equal since first is not in the second array of groups")
+	}
+}
+
+func TestIpPermissionExistsHandlesMultipleGroupIdsWithUserIds(t *testing.T) {
+	oldIpPermission := ec2.IpPermission{
+		UserIdGroupPairs: []*ec2.UserIdGroupPair{
+			{GroupId: aws.String("firstGroupId"), UserId: aws.String("firstUserId")},
+			{GroupId: aws.String("secondGroupId"), UserId: aws.String("secondUserId")},
+			{GroupId: aws.String("thirdGroupId"), UserId: aws.String("thirdUserId")},
+		},
+	}
+
+	existingIpPermission := ec2.IpPermission{
+		UserIdGroupPairs: []*ec2.UserIdGroupPair{
+			{GroupId: aws.String("secondGroupId"), UserId: aws.String("secondUserId")},
+		},
+	}
+
+	newIpPermission := ec2.IpPermission{
+		UserIdGroupPairs: []*ec2.UserIdGroupPair{
+			{GroupId: aws.String("secondGroupId"), UserId: aws.String("anotherUserId")},
+		},
+	}
+
+	equals := ipPermissionExists(&existingIpPermission, &oldIpPermission, true)
+	if !equals {
+		t.Errorf("Should have been considered equal since first is in the second array of groups")
+	}
+
+	equals = ipPermissionExists(&newIpPermission, &oldIpPermission, true)
+	if equals {
+		t.Errorf("Should have not been considered equal since first is not in the second array of groups")
+	}
+}
+
+func TestUpdateLoadBalancerCname(t *testing.T) {
+	awsServices := NewFakeAWSServices()
+	config := fmt.Sprintf("[global]\nKubernetesClusterTag = %v", FakeClusterName)
+	c, err := newAWSCloud(strings.NewReader(config), awsServices)
+	if err != nil {
+		t.Errorf("Error building aws cloud: %v", err)
+		return
+	}
+
+	elbHostname := aws.String(FakeElbHostname)
+	service := api.Service{ObjectMeta: api.ObjectMeta{
+		Name:      FakeServiceName,
+		Namespace: FakeNamespace,
+		Labels:    map[string]string{LabelLoadBalancerCnameZone: FakeHostedZoneName},
+	}}
+
+	err = c.addLoadBalancerCnameEntry(&service, elbHostname)
+	if err != nil {
+		t.Errorf("Error adding dns entry: %v", err)
+	}
+
+	err = c.removeLoadBalancerCnameEntry(&service, elbHostname)
+	if err != nil {
+		t.Errorf("Error adding dns entry: %v", err)
 	}
 }

@@ -37,6 +37,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elb"
+	"github.com/aws/aws-sdk-go/service/route53"
 	"github.com/scalingdata/gcfg"
 
 	"k8s.io/kubernetes/pkg/api"
@@ -62,6 +63,7 @@ type AWSServices interface {
 	Compute(region string) (EC2, error)
 	LoadBalancing(region string) (ELB, error)
 	Autoscaling(region string) (ASG, error)
+	Route53(region string) (R53, error)
 	Metadata() (EC2Metadata, error)
 }
 
@@ -129,6 +131,12 @@ type ASG interface {
 	DescribeAutoScalingGroups(*autoscaling.DescribeAutoScalingGroupsInput) (*autoscaling.DescribeAutoScalingGroupsOutput, error)
 }
 
+// This is a simple pass-through of the route 53 client interface, which allows for testing
+type R53 interface {
+	ChangeResourceRecordSets(*route53.ChangeResourceRecordSetsInput) (*route53.ChangeResourceRecordSetsOutput, error)
+	ListHostedZonesByName(*route53.ListHostedZonesByNameInput) (*route53.ListHostedZonesByNameOutput, error)
+}
+
 // Abstraction over the AWS metadata service
 type EC2Metadata interface {
 	// Query the EC2 metadata service (used to discover instance-id etc)
@@ -176,6 +184,7 @@ type AWSCloud struct {
 	ec2              EC2
 	elb              ELB
 	asg              ASG
+	r53              R53
 	metadata         EC2Metadata
 	cfg              *AWSCloudConfig
 	availabilityZone string
@@ -234,6 +243,14 @@ func (p *awsSDKProvider) Autoscaling(regionName string) (ASG, error) {
 		Credentials: p.creds,
 	})
 	return client, nil
+}
+
+func (p *awsSDKProvider) Route53(regionName string) (R53, error) {
+	r53Client := route53.New(&aws.Config{
+		Region:      &regionName,
+		Credentials: p.creds,
+	})
+	return r53Client, nil
 }
 
 func (p *awsSDKProvider) Metadata() (EC2Metadata, error) {
@@ -547,11 +564,17 @@ func newAWSCloud(config io.Reader, awsServices AWSServices) (*AWSCloud, error) {
 		return nil, fmt.Errorf("error creating AWS autoscaling client: %v", err)
 	}
 
+	r53, err := awsServices.Route53(regionName)
+	if err != nil {
+		return nil, fmt.Errorf("error creating AWS route53 client: %v", err)
+	}
+
 	awsCloud := &AWSCloud{
 		awsServices:      awsServices,
 		ec2:              ec2,
 		elb:              elb,
 		asg:              asg,
+		r53:              r53,
 		metadata:         metadata,
 		cfg:              cfg,
 		region:           regionName,
@@ -1346,6 +1369,7 @@ func isEqualIntPointer(l, r *int64) bool {
 	}
 	return *l == *r
 }
+
 func isEqualStringPointer(l, r *string) bool {
 	if l == nil {
 		return r == nil
@@ -1356,40 +1380,50 @@ func isEqualStringPointer(l, r *string) bool {
 	return *l == *r
 }
 
-func isEqualIPPermission(l, r *ec2.IpPermission, compareGroupUserIDs bool) bool {
-	if !isEqualIntPointer(l.FromPort, r.FromPort) {
+func ipPermissionExists(newPermission, existing *ec2.IpPermission, compareGroupUserIDs bool) bool {
+	if !isEqualIntPointer(newPermission.FromPort, existing.FromPort) {
 		return false
 	}
-	if !isEqualIntPointer(l.ToPort, r.ToPort) {
+	if !isEqualIntPointer(newPermission.ToPort, existing.ToPort) {
 		return false
 	}
-	if !isEqualStringPointer(l.IpProtocol, r.IpProtocol) {
+	if !isEqualStringPointer(newPermission.IpProtocol, existing.IpProtocol) {
 		return false
 	}
-	if len(l.IpRanges) != len(r.IpRanges) {
+	if len(newPermission.IpRanges) != len(existing.IpRanges) {
 		return false
 	}
-	for j := range l.IpRanges {
-		if !isEqualStringPointer(l.IpRanges[j].CidrIp, r.IpRanges[j].CidrIp) {
+	for j := range newPermission.IpRanges {
+		if !isEqualStringPointer(newPermission.IpRanges[j].CidrIp, existing.IpRanges[j].CidrIp) {
 			return false
 		}
 	}
 
-	if len(l.UserIdGroupPairs) != len(r.UserIdGroupPairs) {
-		return false
-	}
-	for j := range l.UserIdGroupPairs {
-		if !isEqualStringPointer(l.UserIdGroupPairs[j].GroupId, r.UserIdGroupPairs[j].GroupId) {
-			return false
-		}
-		if compareGroupUserIDs {
-			if !isEqualStringPointer(l.UserIdGroupPairs[j].UserId, r.UserIdGroupPairs[j].UserId) {
-				return false
+	for _, leftPair := range newPermission.UserIdGroupPairs {
+		for _, rightPair := range existing.UserIdGroupPairs {
+			if isEqualUserGroupPair(leftPair, rightPair, compareGroupUserIDs) {
+				return true
 			}
 		}
+		return false
 	}
 
 	return true
+}
+
+func isEqualUserGroupPair(l, r *ec2.UserIdGroupPair, compareGroupUserIDs bool) bool {
+	glog.V(2).Infof("Comparing %v to %v", *l.GroupId, *r.GroupId)
+	if isEqualStringPointer(l.GroupId, r.GroupId) {
+		if compareGroupUserIDs {
+			if isEqualStringPointer(l.UserId, r.UserId) {
+				return true
+			}
+		} else {
+			return true
+		}
+	}
+
+	return false
 }
 
 // Makes sure the security group includes the specified permissions
@@ -1406,6 +1440,8 @@ func (s *AWSCloud) ensureSecurityGroupIngress(securityGroupId string, addPermiss
 		return false, fmt.Errorf("security group not found: %s", securityGroupId)
 	}
 
+	glog.V(2).Infof("Existing security group ingress: %s %v", securityGroupId, group.IpPermissions)
+
 	changes := []*ec2.IpPermission{}
 	for _, addPermission := range addPermissions {
 		hasUserID := false
@@ -1417,7 +1453,7 @@ func (s *AWSCloud) ensureSecurityGroupIngress(securityGroupId string, addPermiss
 
 		found := false
 		for _, groupPermission := range group.IpPermissions {
-			if isEqualIPPermission(addPermission, groupPermission, hasUserID) {
+			if ipPermissionExists(addPermission, groupPermission, hasUserID) {
 				found = true
 				break
 			}
@@ -1472,8 +1508,8 @@ func (s *AWSCloud) removeSecurityGroupIngress(securityGroupId string, removePerm
 
 		var found *ec2.IpPermission
 		for _, groupPermission := range group.IpPermissions {
-			if isEqualIPPermission(groupPermission, removePermission, hasUserID) {
-				found = groupPermission
+			if ipPermissionExists(removePermission, groupPermission, hasUserID) {
+				found = removePermission
 				break
 			}
 		}
@@ -1601,22 +1637,25 @@ func (s *AWSCloud) createTags(request *ec2.CreateTagsInput) (*ec2.CreateTagsOutp
 	}
 }
 
+func findSubnetIDs(instances []*ec2.Instance) []string {
+	subnetIDs := []string{}
+	for _, instance := range instances {
+		subnetIDs = append(subnetIDs, *instance.SubnetId)
+	}
+	return subnetIDs
+}
+
 // EnsureTCPLoadBalancer implements TCPLoadBalancer.EnsureTCPLoadBalancer
-// TODO(justinsb) It is weird that these take a region.  I suspect it won't work cross-region anwyay.
-func (s *AWSCloud) EnsureTCPLoadBalancer(name, region string, publicIP net.IP, ports []*api.ServicePort, hosts []string, affinity api.ServiceAffinity) (*api.LoadBalancerStatus, error) {
-	glog.V(2).Infof("EnsureTCPLoadBalancer(%v, %v, %v, %v, %v)", name, region, publicIP, ports, hosts)
+func (s *AWSCloud) EnsureTCPLoadBalancer(service *api.Service, hosts []string) (*api.LoadBalancerStatus, error) {
+	glog.V(2).Infof("EnsureTCPLoadBalancer(%v, %v)", *service, hosts)
 
-	if region != s.region {
-		return nil, fmt.Errorf("requested load balancer region '%s' does not match cluster region '%s'", region, s.region)
-	}
-
-	if affinity != api.ServiceAffinityNone {
+	if service.Spec.SessionAffinity != api.ServiceAffinityNone {
 		// ELB supports sticky sessions, but only when configured for HTTP/HTTPS
-		return nil, fmt.Errorf("unsupported load balancer affinity: %v", affinity)
+		return nil, fmt.Errorf("unsupported load balancer affinity: %v", service.Spec.SessionAffinity)
 	}
 
-	if publicIP != nil {
-		return nil, fmt.Errorf("publicIP cannot be specified for AWS ELB")
+	if service.Spec.LoadBalancerIP != "" {
+		return nil, fmt.Errorf("LoadBalancerIP cannot be specified for AWS ELB")
 	}
 
 	instances, err := s.getInstancesByNodeNames(hosts)
@@ -1634,33 +1673,9 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(name, region string, publicIP net.IP, p
 	}
 
 	// Construct list of configured subnets
-	subnetIDs := []string{}
-	{
-		request := &ec2.DescribeSubnetsInput{}
-		filters := []*ec2.Filter{}
-		filters = append(filters, newEc2Filter("vpc-id", orEmpty(vpc.VpcId)))
-		// Note, this will only return subnets tagged with the cluster identifier for this Kubernetes cluster.
-		// In the case where an AZ has public & private subnets per AWS best practices, the deployment should ensure
-		// only the public subnet (where the ELB will go) is so tagged.
-		filters = s.addFilters(filters)
-		request.Filters = filters
+	subnetIDs := findSubnetIDs(instances)
 
-		subnets, err := s.ec2.DescribeSubnets(request)
-		if err != nil {
-			glog.Error("error describing subnets: ", err)
-			return nil, err
-		}
-
-		//	zones := []string{}
-		for _, subnet := range subnets {
-			subnetIDs = append(subnetIDs, orEmpty(subnet.SubnetId))
-			if !strings.HasPrefix(orEmpty(subnet.AvailabilityZone), region) {
-				glog.Error("found AZ that did not match region", orEmpty(subnet.AvailabilityZone), " vs ", region)
-				return nil, fmt.Errorf("invalid AZ for region")
-			}
-			//		zones = append(zones, subnet.AvailabilityZone)
-		}
-	}
+	name := cloudprovider.GetLoadBalancerName(service)
 
 	// Create a security group for the load balancer
 	var securityGroupID string
@@ -1674,7 +1689,7 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(name, region string, publicIP net.IP, p
 		}
 
 		permissions := []*ec2.IpPermission{}
-		for _, port := range ports {
+		for _, port := range service.Spec.Ports {
 			portInt64 := int64(port.Port)
 			protocol := strings.ToLower(string(port.Protocol))
 			sourceIp := "0.0.0.0/0"
@@ -1696,7 +1711,7 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(name, region string, publicIP net.IP, p
 
 	// Figure out what mappings we want on the load balancer
 	listeners := []*elb.Listener{}
-	for _, port := range ports {
+	for _, port := range service.Spec.Ports {
 		if port.NodePort == 0 {
 			glog.Errorf("Ignoring port without NodePort defined: %v", port)
 			continue
@@ -1715,7 +1730,7 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(name, region string, publicIP net.IP, p
 	}
 
 	// Build the load balancer itself
-	loadBalancer, err := s.ensureLoadBalancer(name, listeners, subnetIDs, securityGroupIDs)
+	loadBalancer, err := s.ensureLoadBalancer(name, listeners, subnetIDs, securityGroupIDs, isInternalLoadBalancer(service))
 	if err != nil {
 		return nil, err
 	}
@@ -1734,6 +1749,12 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(name, region string, publicIP net.IP, p
 	err = s.ensureLoadBalancerInstances(orEmpty(loadBalancer.LoadBalancerName), loadBalancer.Instances, instances)
 	if err != nil {
 		glog.Warning("Error registering instances with the load balancer: %v", err)
+		return nil, err
+	}
+
+	err = s.addLoadBalancerCnameEntry(service, loadBalancer.DNSName)
+	if err != nil {
+		glog.Warningf("Error creating dns entry for load balancer: %v", err)
 		return nil, err
 	}
 
@@ -1910,10 +1931,8 @@ func (s *AWSCloud) updateInstanceSecurityGroupsForLoadBalancer(lb *elb.LoadBalan
 }
 
 // EnsureTCPLoadBalancerDeleted implements TCPLoadBalancer.EnsureTCPLoadBalancerDeleted.
-func (s *AWSCloud) EnsureTCPLoadBalancerDeleted(name, region string) error {
-	if region != s.region {
-		return fmt.Errorf("requested load balancer region '%s' does not match cluster region '%s'", region, s.region)
-	}
+func (s *AWSCloud) EnsureTCPLoadBalancerDeleted(service *api.Service) error {
+	name := cloudprovider.GetLoadBalancerName(service)
 
 	lb, err := s.describeLoadBalancer(name)
 	if err != nil {
@@ -1997,6 +2016,14 @@ func (s *AWSCloud) EnsureTCPLoadBalancerDeleted(name, region string) error {
 			glog.V(2).Info("waiting for load-balancer to delete so we can delete security groups: ", name)
 
 			time.Sleep(5 * time.Second)
+		}
+	}
+
+	{
+		// Remove the DNS cname if defined
+		err := s.removeLoadBalancerCnameEntry(service, lb.DNSName)
+		if err != nil {
+			glog.Warningf("Error removing cname entry for %v: %v", name, err)
 		}
 	}
 

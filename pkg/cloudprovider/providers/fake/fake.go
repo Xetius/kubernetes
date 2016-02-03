@@ -31,11 +31,11 @@ const ProviderName = "fake"
 
 // FakeBalancer is a fake storage of balancer information
 type FakeBalancer struct {
-	Name       string
-	Region     string
-	ExternalIP net.IP
-	Ports      []*api.ServicePort
-	Hosts      []string
+	Name           string
+	Region         string
+	LoadBalancerIP string
+	Ports          []api.ServicePort
+	Hosts          []string
 }
 
 type FakeUpdateBalancerCall struct {
@@ -130,12 +130,23 @@ func (f *FakeCloud) GetTCPLoadBalancer(name, region string) (*api.LoadBalancerSt
 
 // EnsureTCPLoadBalancer is a test-spy implementation of TCPLoadBalancer.EnsureTCPLoadBalancer.
 // It adds an entry "create" into the internal method call record.
-func (f *FakeCloud) EnsureTCPLoadBalancer(name, region string, externalIP net.IP, ports []*api.ServicePort, hosts []string, affinityType api.ServiceAffinity) (*api.LoadBalancerStatus, error) {
+//func (f *FakeCloud) EnsureTCPLoadBalancer(name, region string, externalIP net.IP, ports []*api.ServicePort, hosts []string, affinityType api.ServiceAffinity) (*api.LoadBalancerStatus, error) {
+func (f *FakeCloud) EnsureTCPLoadBalancer(service *api.Service, hosts []string) (*api.LoadBalancerStatus, error) {
 	f.addCall("create")
 	if f.Balancers == nil {
 		f.Balancers = make(map[string]FakeBalancer)
 	}
-	f.Balancers[name] = FakeBalancer{name, region, externalIP, ports, hosts}
+
+	name := cloudprovider.GetLoadBalancerName(service)
+	spec := service.Spec
+
+	zone, err := f.GetZone()
+	if err != nil {
+		return nil, err
+	}
+	region := zone.Region
+
+	f.Balancers[name] = FakeBalancer{name, region, spec.LoadBalancerIP, spec.Ports, hosts}
 
 	status := &api.LoadBalancerStatus{}
 	status.Ingress = []api.LoadBalancerIngress{{IP: f.ExternalIP.String()}}
@@ -153,7 +164,7 @@ func (f *FakeCloud) UpdateTCPLoadBalancer(name, region string, hosts []string) e
 
 // EnsureTCPLoadBalancerDeleted is a test-spy implementation of TCPLoadBalancer.EnsureTCPLoadBalancerDeleted.
 // It adds an entry "delete" into the internal method call record.
-func (f *FakeCloud) EnsureTCPLoadBalancerDeleted(name, region string) error {
+func (f *FakeCloud) EnsureTCPLoadBalancerDeleted(*api.Service) error {
 	f.addCall("delete")
 	return f.Err
 }
