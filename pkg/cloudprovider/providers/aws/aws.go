@@ -1658,6 +1658,10 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(service *api.Service, hosts []string) (
 		return nil, fmt.Errorf("LoadBalancerIP cannot be specified for AWS ELB")
 	}
 
+	if len(hosts) == 0 {
+		return nil, fmt.Errorf("Load balancer cannot be created, there are no hosts to attach")
+	}
+
 	instances, err := s.getInstancesByNodeNames(hosts)
 	if err != nil {
 		return nil, err
