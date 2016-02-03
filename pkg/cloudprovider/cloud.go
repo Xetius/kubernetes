@@ -91,7 +91,7 @@ type TCPLoadBalancer interface {
 	// This construction is useful because many cloud providers' load balancers
 	// have multiple underlying components, meaning a Get could say that the LB
 	// doesn't exist even if some part of it is still laying around.
-	EnsureTCPLoadBalancerDeleted(name, region string) error
+	EnsureTCPLoadBalancerDeleted(service *api.Service) error
 }
 
 // Instances is an abstract, pluggable interface for sets of instances.

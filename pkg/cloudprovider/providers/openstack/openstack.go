@@ -530,7 +530,7 @@ func (lb *LoadBalancer) GetTCPLoadBalancer(name, region string) (*api.LoadBalanc
 // each region.
 
 func (lb *LoadBalancer) EnsureTCPLoadBalancer(service *api.Service, hosts []string) (*api.LoadBalancerStatus, error) {
-	glog.V(4).Infof("EnsureTCPLoadBalancer(%v, %v)", service, hosts)
+	glog.V(4).Infof("EnsureTCPLoadBalancer(%v, %v)", *service, hosts)
 
 	ports := service.Spec.Ports
 	if len(ports) > 1 {
@@ -558,7 +558,7 @@ func (lb *LoadBalancer) EnsureTCPLoadBalancer(service *api.Service, hosts []stri
 	// TODO: Implement a more efficient update strategy for common changes than delete & create
 	// In particular, if we implement hosts update, we can get rid of UpdateHosts
 	if exists {
-		err := lb.EnsureTCPLoadBalancerDeleted(name, "")
+		err := lb.EnsureTCPLoadBalancerDeleted(service)
 		if err != nil {
 			return nil, fmt.Errorf("error deleting existing openstack load balancer: %v", err)
 		}
@@ -707,8 +707,9 @@ func (lb *LoadBalancer) UpdateTCPLoadBalancer(name, region string, hosts []strin
 	return nil
 }
 
-func (lb *LoadBalancer) EnsureTCPLoadBalancerDeleted(name, region string) error {
-	glog.V(4).Infof("EnsureTCPLoadBalancerDeleted(%v, %v)", name, region)
+func (lb *LoadBalancer) EnsureTCPLoadBalancerDeleted(service *api.Service) error {
+	glog.V(4).Infof("EnsureTCPLoadBalancerDeleted(%v)", *service)
+	name := cloudprovider.GetLoadBalancerName(service)
 
 	vip, err := getVipByName(lb.network, name)
 	if err != nil && err != ErrNotFound {

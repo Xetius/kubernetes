@@ -37,6 +37,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elb"
+	"github.com/aws/aws-sdk-go/service/route53"
 	"github.com/scalingdata/gcfg"
 
 	"k8s.io/kubernetes/pkg/api"
@@ -62,6 +63,7 @@ type AWSServices interface {
 	Compute(region string) (EC2, error)
 	LoadBalancing(region string) (ELB, error)
 	Autoscaling(region string) (ASG, error)
+	Route53(region string) (R53, error)
 	Metadata() (EC2Metadata, error)
 }
 
@@ -129,6 +131,12 @@ type ASG interface {
 	DescribeAutoScalingGroups(*autoscaling.DescribeAutoScalingGroupsInput) (*autoscaling.DescribeAutoScalingGroupsOutput, error)
 }
 
+// This is a simple pass-through of the route 53 client interface, which allows for testing
+type R53 interface {
+	ChangeResourceRecordSets(*route53.ChangeResourceRecordSetsInput) (*route53.ChangeResourceRecordSetsOutput, error)
+	ListHostedZonesByName(*route53.ListHostedZonesByNameInput) (*route53.ListHostedZonesByNameOutput, error)
+}
+
 // Abstraction over the AWS metadata service
 type EC2Metadata interface {
 	// Query the EC2 metadata service (used to discover instance-id etc)
@@ -176,6 +184,7 @@ type AWSCloud struct {
 	ec2              EC2
 	elb              ELB
 	asg              ASG
+	r53              R53
 	metadata         EC2Metadata
 	cfg              *AWSCloudConfig
 	availabilityZone string
@@ -234,6 +243,14 @@ func (p *awsSDKProvider) Autoscaling(regionName string) (ASG, error) {
 		Credentials: p.creds,
 	})
 	return client, nil
+}
+
+func (p *awsSDKProvider) Route53(regionName string) (R53, error) {
+	r53Client := route53.New(&aws.Config{
+		Region:      &regionName,
+		Credentials: p.creds,
+	})
+	return r53Client, nil
 }
 
 func (p *awsSDKProvider) Metadata() (EC2Metadata, error) {
@@ -547,11 +564,17 @@ func newAWSCloud(config io.Reader, awsServices AWSServices) (*AWSCloud, error) {
 		return nil, fmt.Errorf("error creating AWS autoscaling client: %v", err)
 	}
 
+	r53, err := awsServices.Route53(regionName)
+	if err != nil {
+		return nil, fmt.Errorf("error creating AWS route53 client: %v", err)
+	}
+
 	awsCloud := &AWSCloud{
 		awsServices:      awsServices,
 		ec2:              ec2,
 		elb:              elb,
 		asg:              asg,
+		r53:              r53,
 		metadata:         metadata,
 		cfg:              cfg,
 		region:           regionName,
@@ -1624,7 +1647,7 @@ func findSubnetIDs(instances []*ec2.Instance) []string {
 
 // EnsureTCPLoadBalancer implements TCPLoadBalancer.EnsureTCPLoadBalancer
 func (s *AWSCloud) EnsureTCPLoadBalancer(service *api.Service, hosts []string) (*api.LoadBalancerStatus, error) {
-	glog.V(2).Infof("EnsureTCPLoadBalancer(%v, %v)", service, hosts)
+	glog.V(2).Infof("EnsureTCPLoadBalancer(%v, %v)", *service, hosts)
 
 	if service.Spec.SessionAffinity != api.ServiceAffinityNone {
 		// ELB supports sticky sessions, but only when configured for HTTP/HTTPS
@@ -1706,14 +1729,8 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(service *api.Service, hosts []string) (
 		listeners = append(listeners, listener)
 	}
 
-	// Determine whether to build an internal or internet-facing load balancer
-	createInternal := false
-	if service.Labels["kubernetes.io/aws-lb-internal"] == "true" {
-		createInternal = true
-	}
-
 	// Build the load balancer itself
-	loadBalancer, err := s.ensureLoadBalancer(name, listeners, subnetIDs, securityGroupIDs, createInternal)
+	loadBalancer, err := s.ensureLoadBalancer(name, listeners, subnetIDs, securityGroupIDs, isInternalLoadBalancer(service))
 	if err != nil {
 		return nil, err
 	}
@@ -1732,6 +1749,12 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(service *api.Service, hosts []string) (
 	err = s.ensureLoadBalancerInstances(orEmpty(loadBalancer.LoadBalancerName), loadBalancer.Instances, instances)
 	if err != nil {
 		glog.Warning("Error registering instances with the load balancer: %v", err)
+		return nil, err
+	}
+
+	err = s.addLoadBalancerCnameEntry(service, loadBalancer.DNSName)
+	if err != nil {
+		glog.Warningf("Error creating dns entry for load balancer: %v", err)
 		return nil, err
 	}
 
@@ -1908,10 +1931,8 @@ func (s *AWSCloud) updateInstanceSecurityGroupsForLoadBalancer(lb *elb.LoadBalan
 }
 
 // EnsureTCPLoadBalancerDeleted implements TCPLoadBalancer.EnsureTCPLoadBalancerDeleted.
-func (s *AWSCloud) EnsureTCPLoadBalancerDeleted(name, region string) error {
-	if region != s.region {
-		return fmt.Errorf("requested load balancer region '%s' does not match cluster region '%s'", region, s.region)
-	}
+func (s *AWSCloud) EnsureTCPLoadBalancerDeleted(service *api.Service) error {
+	name := cloudprovider.GetLoadBalancerName(service)
 
 	lb, err := s.describeLoadBalancer(name)
 	if err != nil {
@@ -1995,6 +2016,14 @@ func (s *AWSCloud) EnsureTCPLoadBalancerDeleted(name, region string) error {
 			glog.V(2).Info("waiting for load-balancer to delete so we can delete security groups: ", name)
 
 			time.Sleep(5 * time.Second)
+		}
+	}
+
+	{
+		// Remove the DNS cname if defined
+		err := s.removeLoadBalancerCnameEntry(service, lb.DNSName)
+		if err != nil {
+			glog.Warningf("Error removing cname entry for %v: %v", name, err)
 		}
 	}
 
