@@ -1766,7 +1766,7 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(service *api.Service, hosts []string) (
 
 	// TODO: Wait for creation?
 
-	status := toStatus(loadBalancer)
+	status := s.toStatus(loadBalancer, service)
 	return status, nil
 }
 
@@ -1783,20 +1783,26 @@ func (s *AWSCloud) GetTCPLoadBalancer(service *api.Service) (*api.LoadBalancerSt
 		return nil, false, nil
 	}
 
-	status := toStatus(lb)
+	status := s.toStatus(lb, service)
 	return status, true, nil
 }
 
-func toStatus(lb *elb.LoadBalancerDescription) *api.LoadBalancerStatus {
-	status := &api.LoadBalancerStatus{}
+func (s *AWSCloud) toStatus(lb *elb.LoadBalancerDescription, service *api.Service) *api.LoadBalancerStatus {
+	var ingress []api.LoadBalancerIngress
 
 	if !isNilOrEmpty(lb.DNSName) {
-		var ingress api.LoadBalancerIngress
-		ingress.Hostname = orEmpty(lb.DNSName)
-		status.Ingress = []api.LoadBalancerIngress{ingress}
+		var dnsIngress api.LoadBalancerIngress
+		dnsIngress.Hostname = orEmpty(lb.DNSName)
+		ingress = append(ingress, dnsIngress)
 	}
 
-	return status
+	cname := s.getLoadBalancerCname(service)
+	if cname != "" {
+		cnameIngress := api.LoadBalancerIngress{Hostname: cname}
+		ingress = append(ingress, cnameIngress)
+	}
+
+	return &api.LoadBalancerStatus{Ingress: ingress}
 }
 
 // Returns the first security group for an instance, or nil

@@ -456,9 +456,12 @@ func (ec2 *FakeELB) DeleteLoadBalancer(*elb.DeleteLoadBalancerInput) (*elb.Delet
 	panic("Not implemented")
 }
 
-func (ec2 *FakeELB) DescribeLoadBalancers(*elb.DescribeLoadBalancersInput) (*elb.DescribeLoadBalancersOutput, error) {
-	panic("Not implemented")
+func (ec2 *FakeELB) DescribeLoadBalancers(input *elb.DescribeLoadBalancersInput) (*elb.DescribeLoadBalancersOutput, error) {
+	return &elb.DescribeLoadBalancersOutput{LoadBalancerDescriptions: []*elb.LoadBalancerDescription{
+		{DNSName: aws.String(FakeElbHostname)},
+	}}, nil
 }
+
 func (ec2 *FakeELB) RegisterInstancesWithLoadBalancer(*elb.RegisterInstancesWithLoadBalancerInput) (*elb.RegisterInstancesWithLoadBalancerOutput, error) {
 	panic("Not implemented")
 }
@@ -994,5 +997,52 @@ func TestUpdateLoadBalancerCname(t *testing.T) {
 	err = c.removeLoadBalancerCnameEntry(&service, elbHostname)
 	if err != nil {
 		t.Errorf("Error adding dns entry: %v", err)
+	}
+}
+
+func containsIngress(ingresses []api.LoadBalancerIngress, ingress api.LoadBalancerIngress) bool {
+	for _, i := range ingresses {
+		if i == ingress {
+			return true
+		}
+	}
+
+	return false
+}
+
+func TestGetTCPLoadBalancer(t *testing.T) {
+	awsServices := NewFakeAWSServices()
+	config := fmt.Sprintf("[global]\nKubernetesClusterTag = %v", FakeClusterName)
+	c, err := newAWSCloud(strings.NewReader(config), awsServices)
+	if err != nil {
+		t.Errorf("Error building aws cloud: %v", err)
+		return
+	}
+
+	service := api.Service{ObjectMeta: api.ObjectMeta{
+		Name:      FakeServiceName,
+		Namespace: FakeNamespace,
+		Labels:    map[string]string{LabelLoadBalancerCnameZone: FakeHostedZoneName},
+	}}
+
+	lb, exists, err := c.GetTCPLoadBalancer(&service)
+
+	if err != nil {
+		t.Errorf("Failed to retrieve load balancer information: %v", err)
+	}
+
+	if !exists {
+		t.Error("Expected load balancer to exist")
+	}
+
+	dnsIngress := api.LoadBalancerIngress{Hostname: FakeElbHostname}
+	if !containsIngress(lb.Ingress, dnsIngress) {
+		t.Errorf("ELB dns ingress %v was not in list of ingresses %v", FakeElbHostname, lb.Ingress)
+	}
+
+	expectedCname := fmt.Sprintf("%v-%v-%v.%v.", FakeServiceName, FakeNamespace, FakeClusterName, FakeHostedZoneName)
+	cnameIngress := api.LoadBalancerIngress{Hostname: expectedCname}
+	if !containsIngress(lb.Ingress, cnameIngress) {
+		t.Errorf("ELB cname ingress %v was not in list of ingresses %v", expectedCname, lb.Ingress)
 	}
 }

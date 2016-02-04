@@ -320,6 +320,15 @@ func getLoadBalancerHostedZone(service *api.Service) string {
 	}
 }
 
+func (s *AWSCloud) getLoadBalancerCname(service *api.Service) string {
+	hostedZone := getLoadBalancerHostedZone(service)
+	if hostedZone == "" {
+		return ""
+	}
+
+	return fmt.Sprintf("%v-%v-%v.%v", service.Name, service.Namespace, s.cfg.Global.KubernetesClusterTag, hostedZone)
+}
+
 func (s *AWSCloud) updateLoadBalancerCnameEntry(service *api.Service, dnsName *string, action string) error {
 	hostedZone := getLoadBalancerHostedZone(service)
 	if hostedZone == "" {
@@ -341,7 +350,7 @@ func (s *AWSCloud) updateLoadBalancerCnameEntry(service *api.Service, dnsName *s
 		return fmt.Errorf("Could not find hosted zone with name %v.", hostedZone)
 	}
 
-	cname := fmt.Sprintf("%v-%v-%v.%v", service.Name, service.Namespace, s.cfg.Global.KubernetesClusterTag, *zone.Name)
+	cname := s.getLoadBalancerCname(service)
 
 	glog.Infof("%v %v to hosted zone %v (%v)", action, cname, hostedZone, *zone.Id)
 
