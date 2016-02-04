@@ -1771,10 +1771,8 @@ func (s *AWSCloud) EnsureTCPLoadBalancer(service *api.Service, hosts []string) (
 }
 
 // GetTCPLoadBalancer is an implementation of TCPLoadBalancer.GetTCPLoadBalancer
-func (s *AWSCloud) GetTCPLoadBalancer(name, region string) (*api.LoadBalancerStatus, bool, error) {
-	if region != s.region {
-		return nil, false, fmt.Errorf("requested load balancer region '%s' does not match cluster region '%s'", region, s.region)
-	}
+func (s *AWSCloud) GetTCPLoadBalancer(service *api.Service) (*api.LoadBalancerStatus, bool, error) {
+	name := cloudprovider.GetLoadBalancerName(service)
 
 	lb, err := s.describeLoadBalancer(name)
 	if err != nil {

@@ -293,7 +293,7 @@ func (s *ServiceController) createLoadBalancerIfNeeded(namespacedName types.Name
 			// If we don't have any cached memory of the load balancer, we have to ask
 			// the cloud provider for what it knows about it.
 			// Technically EnsureTCPLoadBalancerDeleted can cope, but we want to post meaningful events
-			_, exists, err := s.balancer.GetTCPLoadBalancer(s.loadBalancerName(service), s.zone.Region)
+			_, exists, err := s.balancer.GetTCPLoadBalancer(service)
 			if err != nil {
 				return fmt.Errorf("Error getting LB for service %s: %v", namespacedName, err), retryable
 			}
@@ -679,7 +679,7 @@ func (s *ServiceController) lockedUpdateLoadBalancerHosts(service *api.Service, 
 	}
 
 	// It's only an actual error if the load balancer still exists.
-	if _, exists, err := s.balancer.GetTCPLoadBalancer(name, s.zone.Region); err != nil {
+	if _, exists, err := s.balancer.GetTCPLoadBalancer(service); err != nil {
 		glog.Errorf("External error while checking if TCP load balancer %q exists: name, %v", name, err)
 	} else if !exists {
 		return nil

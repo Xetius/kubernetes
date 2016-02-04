@@ -80,7 +80,7 @@ type TCPLoadBalancer interface {
 	// TODO: Break this up into different interfaces (LB, etc) when we have more than one type of service
 	// GetTCPLoadBalancer returns whether the specified load balancer exists, and
 	// if so, what its status is.
-	GetTCPLoadBalancer(name, region string) (status *api.LoadBalancerStatus, exists bool, err error)
+	GetTCPLoadBalancer(service *api.Service) (status *api.LoadBalancerStatus, exists bool, err error)
 	// EnsureTCPLoadBalancer creates a new tcp load balancer, or updates an existing one. Returns the status of the balancer
 	EnsureTCPLoadBalancer(service *api.Service, hosts []string) (*api.LoadBalancerStatus, error)
 	// UpdateTCPLoadBalancer updates hosts under the specified load balancer.

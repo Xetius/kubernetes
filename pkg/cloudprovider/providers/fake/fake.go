@@ -121,7 +121,7 @@ func (f *FakeCloud) Routes() (cloudprovider.Routes, bool) {
 }
 
 // GetTCPLoadBalancer is a stub implementation of TCPLoadBalancer.GetTCPLoadBalancer.
-func (f *FakeCloud) GetTCPLoadBalancer(name, region string) (*api.LoadBalancerStatus, bool, error) {
+func (f *FakeCloud) GetTCPLoadBalancer(service *api.Service) (*api.LoadBalancerStatus, bool, error) {
 	status := &api.LoadBalancerStatus{}
 	status.Ingress = []api.LoadBalancerIngress{{IP: f.ExternalIP.String()}}
 

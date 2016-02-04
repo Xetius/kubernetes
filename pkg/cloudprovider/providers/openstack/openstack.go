@@ -509,7 +509,8 @@ func getVipByName(client *gophercloud.ServiceClient, name string) (*vips.Virtual
 	return &vipList[0], nil
 }
 
-func (lb *LoadBalancer) GetTCPLoadBalancer(name, region string) (*api.LoadBalancerStatus, bool, error) {
+func (lb *LoadBalancer) GetTCPLoadBalancer(service *api.Service) (*api.LoadBalancerStatus, bool, error) {
+	name := cloudprovider.GetLoadBalancerName(service)
 	vip, err := getVipByName(lb.network, name)
 	if err == ErrNotFound {
 		return nil, false, nil
@@ -550,7 +551,7 @@ func (lb *LoadBalancer) EnsureTCPLoadBalancer(service *api.Service, hosts []stri
 
 	name := cloudprovider.GetLoadBalancerName(service)
 	glog.V(2).Info("Checking if openstack load balancer already exists: %s", name)
-	_, exists, err := lb.GetTCPLoadBalancer(name, "")
+	_, exists, err := lb.GetTCPLoadBalancer(service)
 	if err != nil {
 		return nil, fmt.Errorf("error checking if openstack load balancer already exists: %v", err)
 	}

@@ -757,11 +757,6 @@ func TestLoadBalancerMatchesClusterRegion(t *testing.T) {
 	badELBRegion := "bad-elb-region"
 	errorMessage := fmt.Sprintf("requested load balancer region '%s' does not match cluster region '%s'", badELBRegion, c.region)
 
-	_, _, err = c.GetTCPLoadBalancer("elb-name", badELBRegion)
-	if err == nil || err.Error() != errorMessage {
-		t.Errorf("Expected GetTCPLoadBalancer region mismatch error.")
-	}
-
 	err = c.UpdateTCPLoadBalancer("elb-name", badELBRegion, nil)
 	if err == nil || err.Error() != errorMessage {
 		t.Errorf("Expected UpdateTCPLoadBalancer region mismatch error.")

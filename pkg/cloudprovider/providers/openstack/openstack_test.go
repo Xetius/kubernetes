@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/rackspace/gophercloud"
+	"k8s.io/kubernetes/pkg/api"
 )
 
 func TestReadConfig(t *testing.T) {
@@ -167,7 +168,7 @@ func TestTCPLoadBalancer(t *testing.T) {
 		t.Fatalf("TCPLoadBalancer() returned false - perhaps your stack doesn't support Neutron?")
 	}
 
-	_, exists, err := lb.GetTCPLoadBalancer("noexist", "region")
+	_, exists, err := lb.GetTCPLoadBalancer(&api.Service{ObjectMeta: api.ObjectMeta{Name: "noexist"}})
 	if err != nil {
 		t.Fatalf("GetTCPLoadBalancer(\"noexist\") returned error: %s", err)
 	}

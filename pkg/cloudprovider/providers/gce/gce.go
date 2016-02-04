@@ -316,7 +316,15 @@ func (gce *GCECloud) waitForZoneOp(op *compute.Operation) error {
 }
 
 // GetTCPLoadBalancer is an implementation of TCPLoadBalancer.GetTCPLoadBalancer
-func (gce *GCECloud) GetTCPLoadBalancer(name, region string) (*api.LoadBalancerStatus, bool, error) {
+func (gce *GCECloud) GetTCPLoadBalancer(service *api.Service) (*api.LoadBalancerStatus, bool, error) {
+	name := service.Name
+
+	zone, err := gce.GetZone()
+	if err != nil {
+		return nil, false, err
+	}
+	region := zone.Region
+
 	fwd, err := gce.service.ForwardingRules.Get(gce.projectID, region, name).Do()
 	if err == nil {
 		status := &api.LoadBalancerStatus{}
