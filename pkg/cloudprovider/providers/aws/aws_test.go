@@ -275,6 +275,20 @@ func instanceMatchesFilter(instance *ec2.Instance, filter *ec2.Filter) bool {
 		}
 		return contains(filter.Values, *instance.PrivateDnsName)
 	}
+
+	if name == "instance-state-name" {
+		return contains(filter.Values, *instance.State.Name)
+	}
+
+	if name == "tag:"+TagNameKubernetesCluster {
+		for _, tag := range instance.Tags {
+			if *tag.Key == TagNameKubernetesCluster {
+				return contains(filter.Values, *tag.Value)
+			}
+		}
+		return false
+	}
+
 	panic("Unknown filter name: " + name)
 }
 
@@ -878,5 +892,48 @@ func TestIpPermissionExistsHandlesMultipleGroupIdsWithUserIds(t *testing.T) {
 	equals = ipPermissionExists(&newIpPermission, &oldIpPermission, true)
 	if equals {
 		t.Errorf("Should have not been considered equal since first is not in the second array of groups")
+	}
+}
+
+func TestFindInstanceByNodeNameExcludesTerminatedInstances(t *testing.T) {
+	awsServices := NewFakeAWSServices()
+
+	nodeName := "my-dns.internal"
+
+	var tag ec2.Tag
+	tag.Key = aws.String(TagNameKubernetesCluster)
+	tag.Value = aws.String(TestClusterId)
+	tags := []*ec2.Tag{&tag}
+
+	var runningInstance ec2.Instance
+	runningInstance.InstanceId = aws.String("i-running")
+	runningInstance.PrivateDnsName = aws.String(nodeName)
+	runningInstance.State = &ec2.InstanceState{Code: aws.Int64(16), Name: aws.String("running")}
+	runningInstance.Tags = tags
+
+	var terminatedInstance ec2.Instance
+	terminatedInstance.InstanceId = aws.String("i-terminated")
+	terminatedInstance.PrivateDnsName = aws.String(nodeName)
+	terminatedInstance.State = &ec2.InstanceState{Code: aws.Int64(48), Name: aws.String("terminated")}
+	terminatedInstance.Tags = tags
+
+	instances := []*ec2.Instance{&terminatedInstance, &runningInstance}
+	awsServices.instances = append(awsServices.instances, instances...)
+
+	c, err := newAWSCloud(strings.NewReader("[global]"), awsServices)
+	if err != nil {
+		t.Errorf("Error building aws cloud: %v", err)
+		return
+	}
+
+	instance, err := c.findInstanceByNodeName(nodeName)
+
+	if err != nil {
+		t.Errorf("Failed to find instance: %v", err)
+		return
+	}
+
+	if *instance.InstanceId != "i-running" {
+		t.Errorf("Expected running instance but got %v", *instance.InstanceId)
 	}
 }

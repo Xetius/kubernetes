@@ -2324,6 +2324,7 @@ func (a *AWSCloud) getAllInstances() ([]*ec2.Instance, error) {
 func (a *AWSCloud) findInstanceByNodeName(nodeName string) (*ec2.Instance, error) {
 	filters := []*ec2.Filter{
 		newEc2Filter("private-dns-name", nodeName),
+		newEc2Filter("instance-state-name", "running"),
 	}
 	filters = a.addFilters(filters)
 	request := &ec2.DescribeInstancesInput{
