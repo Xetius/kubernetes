@@ -284,18 +284,10 @@ func instanceMatchesFilter(instance *ec2.Instance, filter *ec2.Filter) bool {
 		return contains(filter.Values, *instance.PrivateDnsName)
 	}
 
-	if name == "tag:"+TagNameKubernetesNode {
+	if strings.HasPrefix(name, "tag:") {
+		tagName := name[4:]
 		for _, tag := range instance.Tags {
-			if *tag.Key == TagNameKubernetesNode {
-				return contains(filter.Values, *tag.Value)
-			}
-		}
-		return false
-	}
-
-	if name == "tag:"+TagNameKubernetesCluster {
-		for _, tag := range instance.Tags {
-			if *tag.Key == TagNameKubernetesCluster {
+			if *tag.Key == tagName {
 				return contains(filter.Values, *tag.Value)
 			}
 		}
@@ -333,11 +325,8 @@ func (self *FakeEC2) DescribeInstances(request *ec2.DescribeInstancesInput) ([]*
 			allMatch := true
 			for _, filter := range request.Filters {
 				if !instanceMatchesFilter(instance, filter) {
-					glog.Info("Filter didn't match")
 					allMatch = false
 					break
-				} else {
-					glog.Info("Filter matched")
 				}
 			}
 			if !allMatch {
