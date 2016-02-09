@@ -50,7 +50,7 @@ const ProviderName = "aws"
 
 // The tag name we use to differentiate multiple logically independent clusters running in the same AZ
 const TagNameKubernetesCluster = "KubernetesCluster"
-const TagNameKubernetesNode = "KubernetesNode"
+const TagNameKubernetesNode = "kubernetes.io/nodename"
 
 // We sometimes read to see if something exists; then try to create it if we didn't find it
 // This can fail once in a consistent system if done in parallel
