@@ -335,6 +335,9 @@ func (s *AWSCloud) updateLoadBalancerCnameEntry(service *api.Service, dnsName *s
 		return nil
 	}
 
+	s.r53Mutex.Lock()
+	defer s.r53Mutex.Unlock()
+
 	zonesInput := &route53.ListHostedZonesByNameInput{DNSName: aws.String(hostedZone)}
 	zones, err := s.r53.ListHostedZonesByName(zonesInput)
 	if err != nil {
