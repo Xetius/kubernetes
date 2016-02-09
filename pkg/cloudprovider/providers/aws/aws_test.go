@@ -120,6 +120,8 @@ type FakeAWSServices struct {
 	metadata *FakeMetadata
 }
 
+const SelfTaggedNodeName = "self-tag"
+
 func NewFakeAWSServices() *FakeAWSServices {
 	s := &FakeAWSServices{}
 	s.availabilityZone = "us-east-1a"
@@ -142,7 +144,11 @@ func NewFakeAWSServices() *FakeAWSServices {
 	var tag ec2.Tag
 	tag.Key = aws.String(TagNameKubernetesCluster)
 	tag.Value = aws.String(TestClusterId)
-	selfInstance.Tags = []*ec2.Tag{&tag}
+
+	var nameTag ec2.Tag
+	nameTag.Key = aws.String(TagNameKubernetesNode)
+	nameTag.Value = aws.String(SelfTaggedNodeName)
+	selfInstance.Tags = []*ec2.Tag{&tag, &nameTag}
 
 	return s
 }
@@ -426,6 +432,51 @@ func (ec2 *FakeEC2) DescribeSubnets(*ec2.DescribeSubnetsInput) ([]*ec2.Subnet, e
 
 func (ec2 *FakeEC2) CreateTags(*ec2.CreateTagsInput) (*ec2.CreateTagsOutput, error) {
 	panic("Not implemented")
+}
+
+func (e *FakeEC2) DescribeTags(input *ec2.DescribeTagsInput) (*ec2.DescribeTagsOutput, error) {
+	var resourceType string
+	var resourceId string
+	for _, filter := range input.Filters {
+		if *filter.Name == "resource-type" {
+			if len(filter.Values) != 1 {
+				return nil, fmt.Errorf("Only expected a single value for resource-type, but got %v", len(filter.Values))
+			}
+			resourceType = *filter.Values[0]
+		}
+
+		if *filter.Name == "resource-id" {
+			if len(filter.Values) != 1 {
+				return nil, fmt.Errorf("Only expected a single value for resource-id, but got %v", len(filter.Values))
+			}
+			resourceId = *filter.Values[0]
+		}
+	}
+
+	if resourceType == "" {
+		return nil, fmt.Errorf("No resource-type found")
+	}
+
+	if resourceId == "" {
+		return nil, fmt.Errorf("No resource-id found")
+	}
+
+	var matchedInstance *ec2.Instance
+	for _, instance := range e.aws.instances {
+		if resourceType == "instance" && *instance.InstanceId == resourceId {
+			matchedInstance = instance
+		}
+	}
+
+	if matchedInstance != nil {
+		var tagDescriptions []*ec2.TagDescription
+		for _, tag := range matchedInstance.Tags {
+			tagDescriptions = append(tagDescriptions, &ec2.TagDescription{Key: tag.Key, Value: tag.Value})
+		}
+		return &ec2.DescribeTagsOutput{Tags: tagDescriptions}, nil
+	}
+
+	return nil, fmt.Errorf("Could not find any matches for input: %v", *input)
 }
 
 func (s *FakeEC2) DescribeRouteTables(request *ec2.DescribeRouteTablesInput) ([]*ec2.RouteTable, error) {
@@ -871,16 +922,15 @@ func TestUseProvidedNodeNameWhenUsingKubernetesNodeTag(t *testing.T) {
 		return
 	}
 
-	nodeName := "node-01"
-	currentNodeName, err := c.CurrentNodeName(nodeName)
+	currentNodeName, err := c.CurrentNodeName("ignored")
 
 	if err != nil {
 		t.Errorf("Failed getting current node name: %v", err)
 		return
 	}
 
-	if currentNodeName != nodeName {
-		t.Errorf("Expected current node name to match provided %v, but was %v", nodeName, currentNodeName)
+	if currentNodeName != SelfTaggedNodeName {
+		t.Errorf("Expected current node name to match provided %v, but was %v", SelfTaggedNodeName, currentNodeName)
 	}
 }
 

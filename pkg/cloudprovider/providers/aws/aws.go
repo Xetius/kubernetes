@@ -98,6 +98,7 @@ type EC2 interface {
 	DescribeSubnets(*ec2.DescribeSubnetsInput) ([]*ec2.Subnet, error)
 
 	CreateTags(*ec2.CreateTagsInput) (*ec2.CreateTagsOutput, error)
+	DescribeTags(*ec2.DescribeTagsInput) (*ec2.DescribeTagsOutput, error)
 
 	DescribeRouteTables(request *ec2.DescribeRouteTablesInput) ([]*ec2.RouteTable, error)
 	CreateRoute(request *ec2.CreateRouteInput) (*ec2.CreateRouteOutput, error)
@@ -295,14 +296,11 @@ func (self *AWSCloud) AddSSHKeyToAllInstances(user string, keyData []byte) error
 }
 
 func (a *AWSCloud) CurrentNodeName(hostname string) (string, error) {
-	if a.cfg.Global.UseKubernetesNodeTag {
-		return hostname, nil
-	}
-
 	selfInstance, err := a.getSelfAWSInstance()
 	if err != nil {
 		return "", err
 	}
+
 	return selfInstance.nodeName, nil
 }
 
@@ -437,6 +435,10 @@ func (s *awsSdkEC2) RevokeSecurityGroupIngress(request *ec2.RevokeSecurityGroupI
 
 func (s *awsSdkEC2) CreateTags(request *ec2.CreateTagsInput) (*ec2.CreateTagsOutput, error) {
 	return s.ec2.CreateTags(request)
+}
+
+func (s *awsSdkEC2) DescribeTags(request *ec2.DescribeTagsInput) (*ec2.DescribeTagsOutput, error) {
+	return s.ec2.DescribeTags(request)
 }
 
 func (s *awsSdkEC2) DescribeRouteTables(request *ec2.DescribeRouteTablesInput) ([]*ec2.RouteTable, error) {
@@ -1080,16 +1082,46 @@ func (s *AWSCloud) getSelfAWSInstance() (*awsInstance, error) {
 		if err != nil {
 			return nil, fmt.Errorf("error fetching instance-id from ec2 metadata service: %v", err)
 		}
-		privateDnsName, err := s.metadata.GetMetadata("local-hostname")
-		if err != nil {
-			return nil, fmt.Errorf("error fetching local-hostname from ec2 metadata service: %v", err)
+
+		var nodeName string
+		if s.cfg.Global.UseKubernetesNodeTag {
+			nodeName, err = s.findTagValue(instanceId, TagNameKubernetesNode)
+			if err != nil {
+				return nil, fmt.Errorf("error fetching node tag from ec2: %v", err)
+			}
+		} else {
+			nodeName, err = s.metadata.GetMetadata("local-hostname")
+			if err != nil {
+				return nil, fmt.Errorf("error fetching local-hostname from ec2 metadata service: %v", err)
+			}
 		}
 
-		i = newAWSInstance(s.ec2, instanceId, privateDnsName)
+		i = newAWSInstance(s.ec2, instanceId, nodeName)
 		s.selfAWSInstance = i
 	}
 
 	return i, nil
+}
+
+func (s *AWSCloud) findTagValue(instanceId string, tagKey string) (string, error) {
+	input := &ec2.DescribeTagsInput{Filters: []*ec2.Filter{
+		&ec2.Filter{Name: aws.String("resource-id"), Values: []*string{aws.String(instanceId)}},
+		&ec2.Filter{Name: aws.String("resource-type"), Values: []*string{aws.String("instance")}},
+	}}
+
+	output, err := s.ec2.DescribeTags(input)
+	if err != nil {
+		return "", err
+	}
+
+	for _, tag := range output.Tags {
+		if *tag.Key == tagKey {
+			glog.V(2).Infof("Found tag on %v, %v:%v", instanceId, *tag.Key, *tag.Value)
+			return *tag.Value, nil
+		}
+	}
+
+	return "", fmt.Errorf("Could not find tag %v for instance %v", tagKey, instanceId)
 }
 
 // Gets the awsInstance with node-name nodeName, or the 'self' instance if nodeName == ""
