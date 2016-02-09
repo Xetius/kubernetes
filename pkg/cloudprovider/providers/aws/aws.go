@@ -301,7 +301,7 @@ func (a *AWSCloud) CurrentNodeName(hostname string) (string, error) {
 		return "", err
 	}
 
-	return selfInstance.nodeName, nil
+	return selfInstance.getNodeName(hostname, a.cfg.Global.UseKubernetesNodeTag)
 }
 
 // Implementation of EC2.Instances
@@ -817,13 +817,14 @@ func (self *awsInstanceType) getEBSMountDevices() []string {
 }
 
 type awsInstance struct {
-	ec2 EC2
+	ec2      EC2
+	metadata EC2Metadata
 
 	// id in AWS
 	awsID string
 
-	// node name in k8s
-	nodeName string
+	// node name in k8s - internal, use getNodeName()
+	nodeName *string
 
 	mutex sync.Mutex
 
@@ -832,8 +833,8 @@ type awsInstance struct {
 	deviceMappings map[string]string
 }
 
-func newAWSInstance(ec2 EC2, awsID, nodeName string) *awsInstance {
-	self := &awsInstance{ec2: ec2, awsID: awsID, nodeName: nodeName}
+func newAWSInstance(ec2 EC2, metadata EC2Metadata, awsID string) *awsInstance {
+	self := &awsInstance{ec2: ec2, metadata: metadata, awsID: awsID}
 
 	// We lazy-init deviceMappings
 	self.deviceMappings = nil
@@ -1083,45 +1084,65 @@ func (s *AWSCloud) getSelfAWSInstance() (*awsInstance, error) {
 			return nil, fmt.Errorf("error fetching instance-id from ec2 metadata service: %v", err)
 		}
 
-		var nodeName string
-		if s.cfg.Global.UseKubernetesNodeTag {
-			nodeName, err = s.findTagValue(instanceId, TagNameKubernetesNode)
-			if err != nil {
-				return nil, fmt.Errorf("error fetching node tag from ec2: %v", err)
-			}
-		} else {
-			nodeName, err = s.metadata.GetMetadata("local-hostname")
-			if err != nil {
-				return nil, fmt.Errorf("error fetching local-hostname from ec2 metadata service: %v", err)
-			}
-		}
-
-		i = newAWSInstance(s.ec2, instanceId, nodeName)
+		i = newAWSInstance(s.ec2, s.metadata, instanceId)
 		s.selfAWSInstance = i
 	}
 
 	return i, nil
 }
 
-func (s *AWSCloud) findTagValue(instanceId string, tagKey string) (string, error) {
-	input := &ec2.DescribeTagsInput{Filters: []*ec2.Filter{
-		&ec2.Filter{Name: aws.String("resource-id"), Values: []*string{aws.String(instanceId)}},
-		&ec2.Filter{Name: aws.String("resource-type"), Values: []*string{aws.String("instance")}},
+// Finds the node name, such as by tagging, and caches for further requests.
+func (i *awsInstance) getNodeName(hostname string, useTag bool) (string, error) {
+	i.mutex.Lock()
+	defer i.mutex.Unlock()
+
+	if i.nodeName == nil {
+		var nodeName string
+		var err error
+		if useTag {
+			nodeName, err = i.findOrCreateTag(TagNameKubernetesNode, hostname)
+			if err != nil {
+				return "", fmt.Errorf("error fetching or create node tag in ec2: %v", err)
+			}
+		} else {
+			nodeName, err = i.metadata.GetMetadata("local-hostname")
+			if err != nil {
+				return "", fmt.Errorf("error fetching local-hostname from ec2 metadata service: %v", err)
+			}
+		}
+
+		i.nodeName = &nodeName
+	}
+
+	return *i.nodeName, nil
+}
+
+func (i *awsInstance) findOrCreateTag(tagKey string, defaultValue string) (string, error) {
+	describeTags := &ec2.DescribeTagsInput{Filters: []*ec2.Filter{
+		{Name: aws.String("resource-id"), Values: []*string{aws.String(i.awsID)}},
+		{Name: aws.String("resource-type"), Values: []*string{aws.String("instance")}},
 	}}
 
-	output, err := s.ec2.DescribeTags(input)
+	output, err := i.ec2.DescribeTags(describeTags)
 	if err != nil {
 		return "", err
 	}
 
 	for _, tag := range output.Tags {
 		if *tag.Key == tagKey {
-			glog.V(2).Infof("Found tag on %v, %v:%v", instanceId, *tag.Key, *tag.Value)
+			glog.V(2).Infof("Found tag on %v, %v:%v", i.awsID, *tag.Key, *tag.Value)
 			return *tag.Value, nil
 		}
 	}
 
-	return "", fmt.Errorf("Could not find tag %v for instance %v", tagKey, instanceId)
+	createTags := ec2.CreateTagsInput{Resources: []*string{aws.String(i.awsID)},
+		Tags: []*ec2.Tag{{Key: aws.String(tagKey), Value: aws.String(defaultValue)}}}
+	_, err = i.ec2.CreateTags(&createTags)
+	if err != nil {
+		return "", err
+	}
+
+	return defaultValue, nil
 }
 
 // Gets the awsInstance with node-name nodeName, or the 'self' instance if nodeName == ""
@@ -1139,7 +1160,7 @@ func (aws *AWSCloud) getAwsInstance(nodeName string) (*awsInstance, error) {
 			return nil, fmt.Errorf("error finding instance %s: %v", nodeName, err)
 		}
 
-		awsInstance = newAWSInstance(aws.ec2, orEmpty(instance.InstanceId), orEmpty(instance.PrivateDnsName))
+		awsInstance = newAWSInstance(aws.ec2, aws.metadata, orEmpty(instance.InstanceId))
 	}
 
 	return awsInstance, nil
