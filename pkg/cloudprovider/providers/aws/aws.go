@@ -195,7 +195,8 @@ type AWSCloud struct {
 	// The AWS instance that we are running on
 	selfAWSInstance *awsInstance
 
-	mutex sync.Mutex
+	mutex    sync.Mutex
+	r53Mutex sync.Mutex
 }
 
 type AWSCloudConfig struct {
