@@ -50,7 +50,7 @@ const ProviderName = "aws"
 
 // The tag name we use to differentiate multiple logically independent clusters running in the same AZ
 const TagNameKubernetesCluster = "KubernetesCluster"
-const TagNameKubernetesNode = "KubernetesNode"
+const TagNameKubernetesNode = "kubernetes.io/nodename"
 
 // We sometimes read to see if something exists; then try to create it if we didn't find it
 // This can fail once in a consistent system if done in parallel
@@ -98,6 +98,7 @@ type EC2 interface {
 	DescribeSubnets(*ec2.DescribeSubnetsInput) ([]*ec2.Subnet, error)
 
 	CreateTags(*ec2.CreateTagsInput) (*ec2.CreateTagsOutput, error)
+	DescribeTags(*ec2.DescribeTagsInput) (*ec2.DescribeTagsOutput, error)
 
 	DescribeRouteTables(request *ec2.DescribeRouteTablesInput) ([]*ec2.RouteTable, error)
 	CreateRoute(request *ec2.CreateRouteInput) (*ec2.CreateRouteOutput, error)
@@ -298,15 +299,12 @@ func (self *AWSCloud) AddSSHKeyToAllInstances(user string, keyData []byte) error
 }
 
 func (a *AWSCloud) CurrentNodeName(hostname string) (string, error) {
-	if a.cfg.Global.UseKubernetesNodeTag {
-		return hostname, nil
-	}
-
 	selfInstance, err := a.getSelfAWSInstance()
 	if err != nil {
 		return "", err
 	}
-	return selfInstance.nodeName, nil
+
+	return selfInstance.getNodeName(hostname, a.cfg.Global.UseKubernetesNodeTag)
 }
 
 // Implementation of EC2.Instances
@@ -440,6 +438,10 @@ func (s *awsSdkEC2) RevokeSecurityGroupIngress(request *ec2.RevokeSecurityGroupI
 
 func (s *awsSdkEC2) CreateTags(request *ec2.CreateTagsInput) (*ec2.CreateTagsOutput, error) {
 	return s.ec2.CreateTags(request)
+}
+
+func (s *awsSdkEC2) DescribeTags(request *ec2.DescribeTagsInput) (*ec2.DescribeTagsOutput, error) {
+	return s.ec2.DescribeTags(request)
 }
 
 func (s *awsSdkEC2) DescribeRouteTables(request *ec2.DescribeRouteTablesInput) ([]*ec2.RouteTable, error) {
@@ -818,13 +820,14 @@ func (self *awsInstanceType) getEBSMountDevices() []string {
 }
 
 type awsInstance struct {
-	ec2 EC2
+	ec2      EC2
+	metadata EC2Metadata
 
 	// id in AWS
 	awsID string
 
-	// node name in k8s
-	nodeName string
+	// node name in k8s - internal, use getNodeName()
+	nodeName *string
 
 	mutex sync.Mutex
 
@@ -833,8 +836,8 @@ type awsInstance struct {
 	deviceMappings map[string]string
 }
 
-func newAWSInstance(ec2 EC2, awsID, nodeName string) *awsInstance {
-	self := &awsInstance{ec2: ec2, awsID: awsID, nodeName: nodeName}
+func newAWSInstance(ec2 EC2, metadata EC2Metadata, awsID string) *awsInstance {
+	self := &awsInstance{ec2: ec2, metadata: metadata, awsID: awsID}
 
 	// We lazy-init deviceMappings
 	self.deviceMappings = nil
@@ -1083,16 +1086,66 @@ func (s *AWSCloud) getSelfAWSInstance() (*awsInstance, error) {
 		if err != nil {
 			return nil, fmt.Errorf("error fetching instance-id from ec2 metadata service: %v", err)
 		}
-		privateDnsName, err := s.metadata.GetMetadata("local-hostname")
-		if err != nil {
-			return nil, fmt.Errorf("error fetching local-hostname from ec2 metadata service: %v", err)
-		}
 
-		i = newAWSInstance(s.ec2, instanceId, privateDnsName)
+		i = newAWSInstance(s.ec2, s.metadata, instanceId)
 		s.selfAWSInstance = i
 	}
 
 	return i, nil
+}
+
+// Finds the node name, such as by tagging, and caches for further requests.
+func (i *awsInstance) getNodeName(hostname string, useTag bool) (string, error) {
+	i.mutex.Lock()
+	defer i.mutex.Unlock()
+
+	if i.nodeName == nil {
+		var nodeName string
+		var err error
+		if useTag {
+			nodeName, err = i.findOrCreateTag(TagNameKubernetesNode, hostname)
+			if err != nil {
+				return "", fmt.Errorf("error fetching or create node tag in ec2: %v", err)
+			}
+		} else {
+			nodeName, err = i.metadata.GetMetadata("local-hostname")
+			if err != nil {
+				return "", fmt.Errorf("error fetching local-hostname from ec2 metadata service: %v", err)
+			}
+		}
+
+		i.nodeName = &nodeName
+	}
+
+	return *i.nodeName, nil
+}
+
+func (i *awsInstance) findOrCreateTag(tagKey string, defaultValue string) (string, error) {
+	describeTags := &ec2.DescribeTagsInput{Filters: []*ec2.Filter{
+		{Name: aws.String("resource-id"), Values: []*string{aws.String(i.awsID)}},
+		{Name: aws.String("resource-type"), Values: []*string{aws.String("instance")}},
+	}}
+
+	output, err := i.ec2.DescribeTags(describeTags)
+	if err != nil {
+		return "", err
+	}
+
+	for _, tag := range output.Tags {
+		if *tag.Key == tagKey {
+			glog.V(2).Infof("Found tag on %v, %v:%v", i.awsID, *tag.Key, *tag.Value)
+			return *tag.Value, nil
+		}
+	}
+
+	createTags := ec2.CreateTagsInput{Resources: []*string{aws.String(i.awsID)},
+		Tags: []*ec2.Tag{{Key: aws.String(tagKey), Value: aws.String(defaultValue)}}}
+	_, err = i.ec2.CreateTags(&createTags)
+	if err != nil {
+		return "", err
+	}
+
+	return defaultValue, nil
 }
 
 // Gets the awsInstance with node-name nodeName, or the 'self' instance if nodeName == ""
@@ -1110,7 +1163,7 @@ func (aws *AWSCloud) getAwsInstance(nodeName string) (*awsInstance, error) {
 			return nil, fmt.Errorf("error finding instance %s: %v", nodeName, err)
 		}
 
-		awsInstance = newAWSInstance(aws.ec2, orEmpty(instance.InstanceId), orEmpty(instance.PrivateDnsName))
+		awsInstance = newAWSInstance(aws.ec2, aws.metadata, orEmpty(instance.InstanceId))
 	}
 
 	return awsInstance, nil

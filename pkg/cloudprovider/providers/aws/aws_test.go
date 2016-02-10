@@ -120,6 +120,8 @@ type FakeAWSServices struct {
 	metadata *FakeMetadata
 }
 
+const SelfTaggedNodeName = "self-tag"
+
 func NewFakeAWSServices() *FakeAWSServices {
 	s := &FakeAWSServices{}
 	s.availabilityZone = "us-east-1a"
@@ -142,7 +144,11 @@ func NewFakeAWSServices() *FakeAWSServices {
 	var tag ec2.Tag
 	tag.Key = aws.String(TagNameKubernetesCluster)
 	tag.Value = aws.String(TestClusterId)
-	selfInstance.Tags = []*ec2.Tag{&tag}
+
+	var nameTag ec2.Tag
+	nameTag.Key = aws.String(TagNameKubernetesNode)
+	nameTag.Value = aws.String(SelfTaggedNodeName)
+	selfInstance.Tags = []*ec2.Tag{&tag, &nameTag}
 
 	return s
 }
@@ -278,18 +284,10 @@ func instanceMatchesFilter(instance *ec2.Instance, filter *ec2.Filter) bool {
 		return contains(filter.Values, *instance.PrivateDnsName)
 	}
 
-	if name == "tag:"+TagNameKubernetesNode {
+	if strings.HasPrefix(name, "tag:") {
+		tagName := name[4:]
 		for _, tag := range instance.Tags {
-			if *tag.Key == TagNameKubernetesNode {
-				return contains(filter.Values, *tag.Value)
-			}
-		}
-		return false
-	}
-
-	if name == "tag:"+TagNameKubernetesCluster {
-		for _, tag := range instance.Tags {
-			if *tag.Key == TagNameKubernetesCluster {
+			if *tag.Key == tagName {
 				return contains(filter.Values, *tag.Value)
 			}
 		}
@@ -327,11 +325,8 @@ func (self *FakeEC2) DescribeInstances(request *ec2.DescribeInstancesInput) ([]*
 			allMatch := true
 			for _, filter := range request.Filters {
 				if !instanceMatchesFilter(instance, filter) {
-					glog.Info("Filter didn't match")
 					allMatch = false
 					break
-				} else {
-					glog.Info("Filter matched")
 				}
 			}
 			if !allMatch {
@@ -424,8 +419,66 @@ func (ec2 *FakeEC2) DescribeSubnets(*ec2.DescribeSubnetsInput) ([]*ec2.Subnet, e
 	panic("Not implemented")
 }
 
-func (ec2 *FakeEC2) CreateTags(*ec2.CreateTagsInput) (*ec2.CreateTagsOutput, error) {
-	panic("Not implemented")
+func (e *FakeEC2) CreateTags(input *ec2.CreateTagsInput) (*ec2.CreateTagsOutput, error) {
+	if len(input.Resources) != 1 {
+		return nil, fmt.Errorf("Expected a single resource id")
+	}
+
+	instanceId := input.Resources[0]
+
+	for _, instance := range e.aws.instances {
+		if *instance.InstanceId == *instanceId {
+			instance.Tags = append(instance.Tags, input.Tags...)
+			return &ec2.CreateTagsOutput{}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("Could not find instance with id %v", instanceId)
+}
+
+func (e *FakeEC2) DescribeTags(input *ec2.DescribeTagsInput) (*ec2.DescribeTagsOutput, error) {
+	var resourceType string
+	var resourceId string
+	for _, filter := range input.Filters {
+		if *filter.Name == "resource-type" {
+			if len(filter.Values) != 1 {
+				return nil, fmt.Errorf("Only expected a single value for resource-type, but got %v", len(filter.Values))
+			}
+			resourceType = *filter.Values[0]
+		}
+
+		if *filter.Name == "resource-id" {
+			if len(filter.Values) != 1 {
+				return nil, fmt.Errorf("Only expected a single value for resource-id, but got %v", len(filter.Values))
+			}
+			resourceId = *filter.Values[0]
+		}
+	}
+
+	if resourceType == "" {
+		return nil, fmt.Errorf("No resource-type found")
+	}
+
+	if resourceId == "" {
+		return nil, fmt.Errorf("No resource-id found")
+	}
+
+	var matchedInstance *ec2.Instance
+	for _, instance := range e.aws.instances {
+		if resourceType == "instance" && *instance.InstanceId == resourceId {
+			matchedInstance = instance
+		}
+	}
+
+	if matchedInstance != nil {
+		var tagDescriptions []*ec2.TagDescription
+		for _, tag := range matchedInstance.Tags {
+			tagDescriptions = append(tagDescriptions, &ec2.TagDescription{Key: tag.Key, Value: tag.Value})
+		}
+		return &ec2.DescribeTagsOutput{Tags: tagDescriptions}, nil
+	}
+
+	return nil, fmt.Errorf("Could not find any matches for input: %v", *input)
 }
 
 func (s *FakeEC2) DescribeRouteTables(request *ec2.DescribeRouteTablesInput) ([]*ec2.RouteTable, error) {
@@ -871,16 +924,59 @@ func TestUseProvidedNodeNameWhenUsingKubernetesNodeTag(t *testing.T) {
 		return
 	}
 
-	nodeName := "node-01"
-	currentNodeName, err := c.CurrentNodeName(nodeName)
+	currentNodeName, err := c.CurrentNodeName("ignored")
 
 	if err != nil {
 		t.Errorf("Failed getting current node name: %v", err)
 		return
 	}
 
-	if currentNodeName != nodeName {
-		t.Errorf("Expected current node name to match provided %v, but was %v", nodeName, currentNodeName)
+	if currentNodeName != SelfTaggedNodeName {
+		t.Errorf("Expected current node name to match provided %v, but was %v", SelfTaggedNodeName, currentNodeName)
+	}
+}
+
+func TestTagIfItDoesntExistWhenUsingKubernetesNodeTags(t *testing.T) {
+	awsServices := NewFakeAWSServices()
+	c, err := newAWSCloud(strings.NewReader("[global]\nuseKubernetesNodeTag = true"), awsServices)
+	if err != nil {
+		t.Errorf("Error building aws cloud: %v", err)
+		return
+	}
+
+	var tag ec2.Tag
+	tag.Key = aws.String(TagNameKubernetesCluster)
+	tag.Value = aws.String(TestClusterId)
+	selfInstance := awsServices.instances[0]
+	selfInstance.Tags = []*ec2.Tag{&tag}
+
+	hostname := "self-custom-hostname"
+	currentNodeName, err := c.CurrentNodeName(hostname)
+
+	if err != nil {
+		t.Errorf("Failed getting current node name: %v", err)
+		return
+	}
+
+	if currentNodeName != hostname {
+		t.Errorf("Expected current node name to match custom hostname %v, but was %v", hostname, currentNodeName)
+		return
+	}
+
+	if len(selfInstance.Tags) < 2 {
+		t.Errorf("Instance wasn't tagged with its node name")
+		return
+	}
+
+	nodenameTag := selfInstance.Tags[1]
+	if *nodenameTag.Key != TagNameKubernetesNode {
+		t.Errorf("Expected tag %v but was %v", TagNameKubernetesNode, *nodenameTag.Key)
+		return
+	}
+
+	if *nodenameTag.Value != hostname {
+		t.Errorf("Expected node name to be %v, but was %v", hostname, *nodenameTag.Value)
+		return
 	}
 }
 
