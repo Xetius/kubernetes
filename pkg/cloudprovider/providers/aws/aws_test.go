@@ -419,8 +419,21 @@ func (ec2 *FakeEC2) DescribeSubnets(*ec2.DescribeSubnetsInput) ([]*ec2.Subnet, e
 	panic("Not implemented")
 }
 
-func (ec2 *FakeEC2) CreateTags(*ec2.CreateTagsInput) (*ec2.CreateTagsOutput, error) {
-	panic("Not implemented")
+func (e *FakeEC2) CreateTags(input *ec2.CreateTagsInput) (*ec2.CreateTagsOutput, error) {
+	if len(input.Resources) != 1 {
+		return nil, fmt.Errorf("Expected a single resource id")
+	}
+
+	instanceId := input.Resources[0]
+
+	for _, instance := range e.aws.instances {
+		if *instance.InstanceId == *instanceId {
+			instance.Tags = append(instance.Tags, input.Tags...)
+			return &ec2.CreateTagsOutput{}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("Could not find instance with id %v", instanceId)
 }
 
 func (e *FakeEC2) DescribeTags(input *ec2.DescribeTagsInput) (*ec2.DescribeTagsOutput, error) {
@@ -920,6 +933,50 @@ func TestUseProvidedNodeNameWhenUsingKubernetesNodeTag(t *testing.T) {
 
 	if currentNodeName != SelfTaggedNodeName {
 		t.Errorf("Expected current node name to match provided %v, but was %v", SelfTaggedNodeName, currentNodeName)
+	}
+}
+
+func TestTagIfItDoesntExistWhenUsingKubernetesNodeTags(t *testing.T) {
+	awsServices := NewFakeAWSServices()
+	c, err := newAWSCloud(strings.NewReader("[global]\nuseKubernetesNodeTag = true"), awsServices)
+	if err != nil {
+		t.Errorf("Error building aws cloud: %v", err)
+		return
+	}
+
+	var tag ec2.Tag
+	tag.Key = aws.String(TagNameKubernetesCluster)
+	tag.Value = aws.String(TestClusterId)
+	selfInstance := awsServices.instances[0]
+	selfInstance.Tags = []*ec2.Tag{&tag}
+
+	hostname := "self-custom-hostname"
+	currentNodeName, err := c.CurrentNodeName(hostname)
+
+	if err != nil {
+		t.Errorf("Failed getting current node name: %v", err)
+		return
+	}
+
+	if currentNodeName != hostname {
+		t.Errorf("Expected current node name to match custom hostname %v, but was %v", hostname, currentNodeName)
+		return
+	}
+
+	if len(selfInstance.Tags) < 2 {
+		t.Errorf("Instance wasn't tagged with its node name")
+		return
+	}
+
+	nodenameTag := selfInstance.Tags[1]
+	if *nodenameTag.Key != TagNameKubernetesNode {
+		t.Errorf("Expected tag %v but was %v", TagNameKubernetesNode, *nodenameTag.Key)
+		return
+	}
+
+	if *nodenameTag.Value != hostname {
+		t.Errorf("Expected node name to be %v, but was %v", hostname, *nodenameTag.Value)
+		return
 	}
 }
 
