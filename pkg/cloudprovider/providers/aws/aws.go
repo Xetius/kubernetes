@@ -38,6 +38,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elb"
+	"github.com/aws/aws-sdk-go/service/route53"
 	"github.com/golang/glog"
 	"gopkg.in/gcfg.v1"
 
@@ -82,6 +83,10 @@ const ServiceAnnotationLoadBalancerInternal = "service.beta.kubernetes.io/aws-lo
 // future we could adjust this to allow setting the proxy protocol only on
 // certain backends.
 const ServiceAnnotationLoadBalancerProxyProtocol = "service.beta.kubernetes.io/aws-load-balancer-proxy-protocol"
+
+// Annotation used on the service to indicate that we want the load balancer to get a cname
+// based on the service name and namespace.
+const ServiceAnnotationLoadBalancerCnameZone = "service.beta.kubernetes.io/aws-lb-cname-zone"
 
 // ServiceAnnotationLoadBalancerCertificate is the annotation used on the
 // service to request a secure listener. Value is a valid certificate ARN.
@@ -134,6 +139,7 @@ type Services interface {
 	Compute(region string) (EC2, error)
 	LoadBalancing(region string) (ELB, error)
 	Autoscaling(region string) (ASG, error)
+	Route53(region string) (Route53, error)
 	Metadata() (EC2Metadata, error)
 }
 
@@ -202,6 +208,12 @@ type ASG interface {
 	DescribeAutoScalingGroups(*autoscaling.DescribeAutoScalingGroupsInput) (*autoscaling.DescribeAutoScalingGroupsOutput, error)
 }
 
+// This is a simple pass-through of the route 53 client interface, which allows for testing
+type Route53 interface {
+	ChangeResourceRecordSets(*route53.ChangeResourceRecordSetsInput) (*route53.ChangeResourceRecordSetsOutput, error)
+	ListHostedZonesByName(*route53.ListHostedZonesByNameInput) (*route53.ListHostedZonesByNameOutput, error)
+}
+
 // EC2Metadata is an abstraction over the AWS metadata service.
 type EC2Metadata interface {
 	// Query the EC2 metadata service (used to discover instance-id etc)
@@ -265,6 +277,7 @@ type Cloud struct {
 	ec2      EC2
 	elb      ELB
 	asg      ASG
+	r53      Route53
 	metadata EC2Metadata
 	cfg      *CloudConfig
 	region   string
@@ -277,6 +290,7 @@ type Cloud struct {
 	selfAWSInstance *awsInstance
 
 	mutex                    sync.Mutex
+	r53Mutex                 sync.Mutex
 	lastNodeNames            sets.String
 	lastInstancesByNodeNames []*ec2.Instance
 }
@@ -397,6 +411,17 @@ func (p *awsSDKProvider) Autoscaling(regionName string) (ASG, error) {
 	p.addHandlers(regionName, &client.Handlers)
 
 	return client, nil
+}
+
+func (p *awsSDKProvider) Route53(regionName string) (Route53, error) {
+	r53Client := route53.New(session.New(&aws.Config{
+		Region:      &regionName,
+		Credentials: p.creds,
+	}))
+
+	p.addHandlers(regionName, &r53Client.Handlers)
+
+	return r53Client, nil
 }
 
 func (p *awsSDKProvider) Metadata() (EC2Metadata, error) {
@@ -642,7 +667,7 @@ func azToRegion(az string) (string, error) {
 	return region, nil
 }
 
-// newAWSCloud creates a new instance of AWSCloud.
+// newAWSCloud creates a new instance of Cloud.
 // AWSProvider and instanceId are primarily for tests
 func newAWSCloud(config io.Reader, awsServices Services) (*Cloud, error) {
 	metadata, err := awsServices.Metadata()
@@ -684,10 +709,16 @@ func newAWSCloud(config io.Reader, awsServices Services) (*Cloud, error) {
 		return nil, fmt.Errorf("error creating AWS autoscaling client: %v", err)
 	}
 
+	r53, err := awsServices.Route53(regionName)
+	if err != nil {
+		return nil, fmt.Errorf("error creating AWS route53 client: %v", err)
+	}
+
 	awsCloud := &Cloud{
 		ec2:      ec2,
 		elb:      elb,
 		asg:      asg,
+		r53:      r53,
 		metadata: metadata,
 		cfg:      cfg,
 		region:   regionName,
@@ -1288,7 +1319,7 @@ func (d *awsDisk) deleteVolume() (bool, error) {
 }
 
 // Builds the awsInstance for the EC2 instance on which we are running.
-// This is called when the AWSCloud is initialized, and should not be called otherwise (because the awsInstance for the local instance is a singleton with drive mapping state)
+// This is called when the Cloud is initialized, and should not be called otherwise (because the awsInstance for the local instance is a singleton with drive mapping state)
 func (c *Cloud) buildSelfAWSInstance() (*awsInstance, error) {
 	if c.selfAWSInstance != nil {
 		panic("do not call buildSelfAWSInstance directly")
@@ -2448,11 +2479,17 @@ func (c *Cloud) EnsureLoadBalancer(apiService *api.Service, hosts []string) (*ap
 		return nil, err
 	}
 
+	err = c.addLoadBalancerCnameEntry(apiService, loadBalancer.DNSName)
+	if err != nil {
+		glog.Warningf("Error creating dns entry for load balancer: %v", err)
+		return nil, err
+	}
+
 	glog.V(1).Infof("Loadbalancer %s (%v) has DNS name %s", loadBalancerName, serviceName, orEmpty(loadBalancer.DNSName))
 
 	// TODO: Wait for creation?
 
-	status := toStatus(loadBalancer)
+	status := c.toStatus(loadBalancer, apiService)
 	return status, nil
 }
 
@@ -2468,20 +2505,32 @@ func (c *Cloud) GetLoadBalancer(service *api.Service) (*api.LoadBalancerStatus, 
 		return nil, false, nil
 	}
 
-	status := toStatus(lb)
+	status := c.toStatus(lb, service)
 	return status, true, nil
 }
 
-func toStatus(lb *elb.LoadBalancerDescription) *api.LoadBalancerStatus {
-	status := &api.LoadBalancerStatus{}
+func (s *Cloud) toStatus(lb *elb.LoadBalancerDescription, apiService *api.Service) *api.LoadBalancerStatus {
+	var ingress []api.LoadBalancerIngress
 
 	if !isNilOrEmpty(lb.DNSName) {
-		var ingress api.LoadBalancerIngress
-		ingress.Hostname = orEmpty(lb.DNSName)
-		status.Ingress = []api.LoadBalancerIngress{ingress}
+		var dnsIngress api.LoadBalancerIngress
+		dnsIngress.Hostname = orEmpty(lb.DNSName)
+		ingress = append(ingress, dnsIngress)
 	}
 
-	return status
+	cname := s.getLoadBalancerCname(apiService)
+	glog.V(4).Infof("CName for service %q is %q", apiService.Name, cname)
+	if cname != "" {
+		cname = removeDnsTrailingDot(cname)
+		cnameIngress := api.LoadBalancerIngress{Hostname: cname}
+		ingress = append(ingress, cnameIngress)
+	}
+
+	return &api.LoadBalancerStatus{Ingress: ingress}
+}
+
+func removeDnsTrailingDot(dns string) string {
+	return strings.TrimSuffix(dns, ".")
 }
 
 // Returns the first security group for an instance, or nil

@@ -843,7 +843,8 @@ function kube::release::create_docker_images_for_server() {
 
       kube::log::status "Starting Docker build for image: ${binary_name}"
 
-      (
+# Removing parallelizm as it was causing flaky builds.
+#      (
         local md5_sum
         md5_sum=$(kube::release::md5 "${binary_dir}/${binary_name}")
 
@@ -880,7 +881,7 @@ function kube::release::create_docker_images_for_server() {
 
         kube::log::status "Deleting docker image ${docker_image_tag}"
         "${DOCKER[@]}" rmi ${docker_image_tag} 2>/dev/null || true
-      ) &
+#      ) &
     done
 
     kube::util::wait-for-jobs || { kube::log::error "previous Docker build failed"; return 1; }

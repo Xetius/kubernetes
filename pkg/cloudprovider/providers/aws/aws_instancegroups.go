@@ -24,7 +24,7 @@ import (
 	"github.com/golang/glog"
 )
 
-// AWSCloud implements InstanceGroups
+// Cloud implements InstanceGroups
 var _ InstanceGroups = &Cloud{}
 
 // ResizeInstanceGroup sets the size of the specificed instancegroup Exported
