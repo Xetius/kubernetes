@@ -757,7 +757,7 @@ func (aws *AWSCloud) ExternalID(name string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if instance == nil || !isAlive(instance) {
+		if instance == nil {
 			return "", cloudprovider.InstanceNotFound
 		}
 		return orEmpty(instance.InstanceId), nil
@@ -802,28 +802,9 @@ func (aws *AWSCloud) InstanceType(name string) (string, error) {
 	}
 }
 
-// Check if the instance is alive (running or pending)
-// We typically ignore instances that are not alive
-func isAlive(instance *ec2.Instance) bool {
-	if instance.State == nil {
-		glog.Warning("Instance state was unexpectedly nil: ", instance)
-		return false
-	}
-	stateName := orEmpty(instance.State.Name)
-	switch stateName {
-	case "shutting-down", "terminated", "stopping", "stopped":
-		return false
-	case "pending", "running":
-		return true
-	default:
-		glog.Errorf("Unknown EC2 instance state: %s", stateName)
-		return false
-	}
-}
-
 // Return a list of instances matching regex string.
 func (s *AWSCloud) getInstancesByRegex(regex string) ([]string, error) {
-	filters := []*ec2.Filter{}
+	filters := []*ec2.Filter{newEc2Filter("instance-state-name", "running")}
 	filters = s.addFilters(filters)
 	request := &ec2.DescribeInstancesInput{
 		Filters: filters,
@@ -849,11 +830,6 @@ func (s *AWSCloud) getInstancesByRegex(regex string) ([]string, error) {
 
 	matchingInstances := []string{}
 	for _, instance := range instances {
-		// TODO: Push filtering down into EC2 API filter?
-		if !isAlive(instance) {
-			continue
-		}
-
 		// Only return fully-ready instances when listing instances
 		// (vs a query by name, where we will return it if we find it)
 		if orEmpty(instance.State.Name) == "pending" {
@@ -2326,35 +2302,35 @@ func (a *AWSCloud) getInstancesByIDs(instanceIDs []*string) (map[string]*ec2.Ins
 // This is currently implemented by fetching all the instances, because this is currently called for all nodes (i.e. the majority)
 // In practice, the breakeven vs looping through and calling getInstanceByNodeName is probably around N=2.
 func (a *AWSCloud) getInstancesByNodeNames(nodeNames []string) ([]*ec2.Instance, error) {
-	allInstances, err := a.getAllInstances()
+	names := make([]*string, len(nodeNames))
+	for i, value := range nodeNames {
+		names[i] = &value
+	}
+
+	nodeNameFilter := &ec2.Filter{
+		Name:   aws.String("private-dns-name"),
+		Values: names,
+	}
+
+	filters := []*ec2.Filter{
+		nodeNameFilter,
+		newEc2Filter("instance-state-name", "running"),
+	}
+
+	filters = a.addFilters(filters)
+	request := &ec2.DescribeInstancesInput{
+		Filters: filters,
+	}
+
+	instances, err := a.ec2.DescribeInstances(request)
 	if err != nil {
+		glog.V(2).Infof("Failed to describe instances %v", nodeNames)
 		return nil, err
 	}
 
-	nodeNamesMap := make(map[string]int, len(nodeNames))
-	for i, nodeName := range nodeNames {
-		nodeNamesMap[nodeName] = i
-	}
-
-	instances := make([]*ec2.Instance, len(nodeNames))
-	for _, instance := range allInstances {
-		nodeName := aws.StringValue(instance.PrivateDnsName)
-		if nodeName == "" {
-			glog.V(2).Infof("ignoring ec2 instance with no PrivateDnsName: %q", aws.StringValue(instance.InstanceId))
-			continue
-		}
-		i, found := nodeNamesMap[nodeName]
-		if !found {
-			continue
-		}
-		instances[i] = instance
-	}
-
-	for i, instance := range instances {
-		if instance == nil {
-			nodeName := nodeNames[i]
-			return nil, fmt.Errorf("unable to find instance %q", nodeName)
-		}
+	if len(instances) == 0 {
+		glog.V(3).Infof("Failed to find any instances %v", nodeNames)
+		return nil, nil
 	}
 
 	return instances, nil
@@ -2376,6 +2352,7 @@ func (a *AWSCloud) getAllInstances() ([]*ec2.Instance, error) {
 func (a *AWSCloud) findInstanceByNodeName(nodeName string) (*ec2.Instance, error) {
 	filters := []*ec2.Filter{
 		newEc2Filter("private-dns-name", nodeName),
+		newEc2Filter("instance-state-name", "running"),
 	}
 	filters = a.addFilters(filters)
 	request := &ec2.DescribeInstancesInput{
