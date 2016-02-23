@@ -1024,7 +1024,7 @@ func TestGetTCPLoadBalancer(t *testing.T) {
 		t.Errorf("ELB dns ingress %v was not in list of ingresses %v", FakeElbHostname, lb.Ingress)
 	}
 
-	expectedCname := fmt.Sprintf("%v-%v-%v.%v.", FakeServiceName, FakeNamespace, FakeClusterName, FakeHostedZoneName)
+	expectedCname := fmt.Sprintf("%v-%v-%v.%v", FakeServiceName, FakeNamespace, FakeClusterName, FakeHostedZoneName)
 	cnameIngress := api.LoadBalancerIngress{Hostname: expectedCname}
 	if !containsIngress(lb.Ingress, cnameIngress) {
 		t.Errorf("ELB cname ingress %v was not in list of ingresses %v", expectedCname, lb.Ingress)
