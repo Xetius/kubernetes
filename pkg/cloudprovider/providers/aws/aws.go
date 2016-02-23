@@ -1956,11 +1956,16 @@ func (s *AWSCloud) toStatus(lb *elb.LoadBalancerDescription, service *api.Servic
 
 	cname := s.getLoadBalancerCname(service)
 	if cname != "" {
+		cname = removeDnsTrailingDot(cname)
 		cnameIngress := api.LoadBalancerIngress{Hostname: cname}
 		ingress = append(ingress, cnameIngress)
 	}
 
 	return &api.LoadBalancerStatus{Ingress: ingress}
+}
+
+func removeDnsTrailingDot(dns string) string {
+	return strings.TrimSuffix(dns, ".")
 }
 
 // Returns the first security group for an instance, or nil
