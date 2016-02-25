@@ -38,6 +38,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elb"
+	"github.com/aws/aws-sdk-go/service/route53"
 	"github.com/scalingdata/gcfg"
 
 	"k8s.io/kubernetes/pkg/api"
@@ -80,6 +81,7 @@ type AWSServices interface {
 	Compute(region string) (EC2, error)
 	LoadBalancing(region string) (ELB, error)
 	Autoscaling(region string) (ASG, error)
+	Route53(region string) (R53, error)
 	Metadata() (EC2Metadata, error)
 }
 
@@ -145,6 +147,12 @@ type ASG interface {
 	DescribeAutoScalingGroups(*autoscaling.DescribeAutoScalingGroupsInput) (*autoscaling.DescribeAutoScalingGroupsOutput, error)
 }
 
+// This is a simple pass-through of the route 53 client interface, which allows for testing
+type R53 interface {
+	ChangeResourceRecordSets(*route53.ChangeResourceRecordSetsInput) (*route53.ChangeResourceRecordSetsOutput, error)
+	ListHostedZonesByName(*route53.ListHostedZonesByNameInput) (*route53.ListHostedZonesByNameOutput, error)
+}
+
 // Abstraction over the AWS metadata service
 type EC2Metadata interface {
 	// Query the EC2 metadata service (used to discover instance-id etc)
@@ -199,6 +207,7 @@ type AWSCloud struct {
 	ec2              EC2
 	elb              ELB
 	asg              ASG
+	r53              R53
 	metadata         EC2Metadata
 	cfg              *AWSCloudConfig
 	availabilityZone string
@@ -209,7 +218,8 @@ type AWSCloud struct {
 	// The AWS instance that we are running on
 	selfAWSInstance *awsInstance
 
-	mutex sync.Mutex
+	mutex    sync.Mutex
+	r53Mutex sync.Mutex
 }
 
 var _ Volumes = &AWSCloud{}
@@ -327,6 +337,14 @@ func (p *awsSDKProvider) Autoscaling(regionName string) (ASG, error) {
 	p.addHandlers(regionName, &client.Handlers)
 
 	return client, nil
+}
+
+func (p *awsSDKProvider) Route53(regionName string) (R53, error) {
+	r53Client := route53.New(session.New(&aws.Config{
+		Region:      &regionName,
+		Credentials: p.creds,
+	}))
+	return r53Client, nil
 }
 
 func (p *awsSDKProvider) Metadata() (EC2Metadata, error) {
@@ -629,10 +647,16 @@ func newAWSCloud(config io.Reader, awsServices AWSServices) (*AWSCloud, error) {
 		return nil, fmt.Errorf("error creating AWS autoscaling client: %v", err)
 	}
 
+	r53, err := awsServices.Route53(regionName)
+	if err != nil {
+		return nil, fmt.Errorf("error creating AWS route53 client: %v", err)
+	}
+
 	awsCloud := &AWSCloud{
 		ec2:              ec2,
 		elb:              elb,
 		asg:              asg,
+		r53:              r53,
 		metadata:         metadata,
 		cfg:              cfg,
 		region:           regionName,
@@ -2047,11 +2071,17 @@ func (s *AWSCloud) EnsureLoadBalancer(service *api.Service, hosts []string) (*ap
 		return nil, err
 	}
 
+	err = s.addLoadBalancerCnameEntry(service, loadBalancer.DNSName)
+	if err != nil {
+		glog.Warningf("Error creating dns entry for load balancer: %v", err)
+		return nil, err
+	}
+
 	glog.V(1).Infof("Loadbalancer %s (%v) has DNS name %s", name, serviceName, orEmpty(loadBalancer.DNSName))
 
 	// TODO: Wait for creation?
 
-	status := toStatus(loadBalancer)
+	status := s.toStatus(loadBalancer, service)
 	return status, nil
 }
 
@@ -2066,20 +2096,31 @@ func (s *AWSCloud) GetLoadBalancer(service *api.Service) (*api.LoadBalancerStatu
 		return nil, false, nil
 	}
 
-	status := toStatus(lb)
+	status := s.toStatus(lb, service)
 	return status, true, nil
 }
 
-func toStatus(lb *elb.LoadBalancerDescription) *api.LoadBalancerStatus {
-	status := &api.LoadBalancerStatus{}
+func (s *AWSCloud) toStatus(lb *elb.LoadBalancerDescription, service *api.Service) *api.LoadBalancerStatus {
+	var ingress []api.LoadBalancerIngress
 
 	if !isNilOrEmpty(lb.DNSName) {
-		var ingress api.LoadBalancerIngress
-		ingress.Hostname = orEmpty(lb.DNSName)
-		status.Ingress = []api.LoadBalancerIngress{ingress}
+		var dnsIngress api.LoadBalancerIngress
+		dnsIngress.Hostname = orEmpty(lb.DNSName)
+		ingress = append(ingress, dnsIngress)
 	}
 
-	return status
+	cname := s.getLoadBalancerCname(service)
+	if cname != "" {
+		cname = removeDnsTrailingDot(cname)
+		cnameIngress := api.LoadBalancerIngress{Hostname: cname}
+		ingress = append(ingress, cnameIngress)
+	}
+
+	return &api.LoadBalancerStatus{Ingress: ingress}
+}
+
+func removeDnsTrailingDot(dns string) string {
+	return strings.TrimSuffix(dns, ".")
 }
 
 // Returns the first security group for an instance, or nil
@@ -2303,6 +2344,14 @@ func (s *AWSCloud) EnsureLoadBalancerDeleted(service *api.Service) error {
 			glog.V(2).Info("Waiting for load-balancer to delete so we can delete security groups: ", service.Name)
 
 			time.Sleep(5 * time.Second)
+		}
+	}
+
+	{
+		// Remove the DNS cname if defined
+		err := s.removeLoadBalancerCnameEntry(service, lb.DNSName)
+		if err != nil {
+			glog.Warningf("Error removing cname entry for %v: %v", service.Name, err)
 		}
 	}
 
