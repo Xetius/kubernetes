@@ -45,7 +45,6 @@ import (
 	"k8s.io/kubernetes/pkg/cloudprovider"
 	"k8s.io/kubernetes/pkg/credentialprovider/aws"
 	"k8s.io/kubernetes/pkg/types"
-	"k8s.io/kubernetes/pkg/util/sets"
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api/unversioned"
@@ -1878,47 +1877,12 @@ func (s *AWSCloud) createTags(resourceID string, tags map[string]string) error {
 	}
 }
 
-func (s *AWSCloud) listPublicSubnetIDsinVPC(vpcId string) ([]string, error) {
-	subnetIds := []string{}
-
-	sRequest := &ec2.DescribeSubnetsInput{}
-	filters := []*ec2.Filter{}
-	filters = append(filters, newEc2Filter("vpc-id", vpcId))
-	filters = s.addFilters(filters)
-	sRequest.Filters = filters
-
-	subnets, err := s.ec2.DescribeSubnets(sRequest)
-	if err != nil {
-		glog.Error("Error describing subnets: ", err)
-		return nil, err
+func findSubnetIDs(instances []*ec2.Instance) []string {
+	subnetIDs := []string{}
+	for _, instance := range instances {
+		subnetIDs = append(subnetIDs, *instance.SubnetId)
 	}
-
-	rRequest := &ec2.DescribeRouteTablesInput{}
-	rRequest.Filters = filters
-
-	rt, err := s.ec2.DescribeRouteTables(rRequest)
-	if err != nil {
-		glog.Error("error describing route tables: ", err)
-		return nil, err
-	}
-
-	availabilityZones := sets.NewString()
-	for _, subnet := range subnets {
-		az := orEmpty(subnet.AvailabilityZone)
-		id := orEmpty(subnet.SubnetId)
-		if !isSubnetPublic(rt, id) {
-			glog.V(2).Infof("Ignoring private subnet %q", id)
-			continue
-		}
-		if availabilityZones.Has(az) {
-			glog.Warning("Found multiple subnets per AZ '", az, "', ignoring subnet '", id, "'")
-			continue
-		}
-		subnetIds = append(subnetIds, id)
-		availabilityZones.Insert(az)
-	}
-
-	return subnetIds, nil
+	return subnetIDs
 }
 
 func isSubnetPublic(rt []*ec2.RouteTable, subnetID string) bool {
@@ -1972,6 +1936,10 @@ func (s *AWSCloud) EnsureLoadBalancer(service *api.Service, hosts []string) (*ap
 		return nil, fmt.Errorf("LoadBalancerIP cannot be specified for AWS ELB")
 	}
 
+	if len(hosts) == 0 {
+		return nil, fmt.Errorf("Load balancer cannot be created, there are no hosts to attach")
+	}
+
 	instances, err := s.getInstancesByNodeNames(hosts)
 	if err != nil {
 		return nil, err
@@ -1984,11 +1952,7 @@ func (s *AWSCloud) EnsureLoadBalancer(service *api.Service, hosts []string) (*ap
 	}
 
 	// Construct list of configured subnets
-	subnetIDs, err := s.listPublicSubnetIDsinVPC(vpcId)
-	if err != nil {
-		glog.Error("Error listing subnets in VPC", err)
-		return nil, err
-	}
+	subnetIDs := findSubnetIDs(instances)
 
 	name := cloudprovider.GetLoadBalancerName(service)
 	serviceName := types.NamespacedName{Namespace: service.Namespace, Name: service.Name}

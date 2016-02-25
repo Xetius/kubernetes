@@ -767,160 +767,25 @@ func TestFindVPCID(t *testing.T) {
 	}
 }
 
-func constructSubnets(subnetsIn map[int]map[string]string) (subnetsOut []*ec2.Subnet) {
-	for i := range subnetsIn {
-		subnetsOut = append(
-			subnetsOut,
-			constructSubnet(
-				subnetsIn[i]["id"],
-				subnetsIn[i]["az"],
-			),
-		)
-	}
-	return
-}
+func TestFindSubnetIDs(t *testing.T) {
 
-func constructSubnet(id string, az string) *ec2.Subnet {
-	return &ec2.Subnet{
-		SubnetId:         &id,
-		AvailabilityZone: &az,
-	}
-}
+	expectedIds := []string{"id1", "id2"}
 
-func constructRouteTables(routeTablesIn map[string]bool) (routeTablesOut []*ec2.RouteTable) {
-	for subnetID := range routeTablesIn {
-		routeTablesOut = append(
-			routeTablesOut,
-			constructRouteTable(
-				subnetID,
-				routeTablesIn[subnetID],
-			),
-		)
+	instances := []*ec2.Instance{
+		{SubnetId: &expectedIds[0]},
+		{SubnetId: &expectedIds[1]},
 	}
-	return
-}
 
-func constructRouteTable(subnetID string, public bool) *ec2.RouteTable {
-	var gatewayID string
-	if public {
-		gatewayID = "igw-" + subnetID[len(subnetID)-8:8]
-	} else {
-		gatewayID = "vgw-" + subnetID[len(subnetID)-8:8]
-	}
-	return &ec2.RouteTable{
-		Associations: []*ec2.RouteTableAssociation{{SubnetId: aws.String(subnetID)}},
-		Routes: []*ec2.Route{{
-			DestinationCidrBlock: aws.String("0.0.0.0/0"),
-			GatewayId:            aws.String(gatewayID),
-		}},
-	}
-}
+	subnetIds := findSubnetIDs(instances)
 
-func TestSubnetIDsinVPC(t *testing.T) {
-	awsServices := NewFakeAWSServices()
-	c, err := newAWSCloud(strings.NewReader("[global]"), awsServices)
-	if err != nil {
-		t.Errorf("Error building aws cloud: %v", err)
+	if len(expectedIds) != len(subnetIds) {
+		t.Errorf("Expected arrays to have same length")
 		return
 	}
 
-	vpcID := "vpc-deadbeef"
-
-	// test with 3 subnets from 3 different AZs
-	subnets := make(map[int]map[string]string)
-	subnets[0] = make(map[string]string)
-	subnets[0]["id"] = "subnet-a0000001"
-	subnets[0]["az"] = "af-south-1a"
-	subnets[1] = make(map[string]string)
-	subnets[1]["id"] = "subnet-b0000001"
-	subnets[1]["az"] = "af-south-1b"
-	subnets[2] = make(map[string]string)
-	subnets[2]["id"] = "subnet-c0000001"
-	subnets[2]["az"] = "af-south-1c"
-	awsServices.ec2.Subnets = constructSubnets(subnets)
-
-	routeTables := map[string]bool{
-		"subnet-a0000001": true,
-		"subnet-b0000001": true,
-		"subnet-c0000001": true,
-	}
-	awsServices.ec2.RouteTables = constructRouteTables(routeTables)
-
-	result, err := c.listPublicSubnetIDsinVPC(vpcID)
-	if err != nil {
-		t.Errorf("Error listing subnets: %v", err)
-		return
-	}
-
-	if len(result) != 3 {
-		t.Errorf("Expected 3 subnets but got %d", len(result))
-		return
-	}
-
-	result_set := make(map[string]bool)
-	for _, v := range result {
-		result_set[v] = true
-	}
-
-	for i := range subnets {
-		if !result_set[subnets[i]["id"]] {
-			t.Errorf("Expected subnet%d '%s' in result: %v", i, subnets[i]["id"], result)
-			return
-		}
-	}
-
-	// test with 4 subnets from 3 different AZs
-	// add duplicate az subnet
-	subnets[3] = make(map[string]string)
-	subnets[3]["id"] = "subnet-c0000002"
-	subnets[3]["az"] = "af-south-1c"
-	awsServices.ec2.Subnets = constructSubnets(subnets)
-	routeTables["subnet-c0000002"] = true
-	awsServices.ec2.RouteTables = constructRouteTables(routeTables)
-
-	result, err = c.listPublicSubnetIDsinVPC(vpcID)
-	if err != nil {
-		t.Errorf("Error listing subnets: %v", err)
-		return
-	}
-
-	if len(result) != 3 {
-		t.Errorf("Expected 3 subnets but got %d", len(result))
-		return
-	}
-
-	// test with 6 subnets from 3 different AZs
-	// with 3 private subnets
-	subnets[4] = make(map[string]string)
-	subnets[4]["id"] = "subnet-d0000001"
-	subnets[4]["az"] = "af-south-1a"
-	subnets[5] = make(map[string]string)
-	subnets[5]["id"] = "subnet-d0000002"
-	subnets[5]["az"] = "af-south-1b"
-
-	awsServices.ec2.Subnets = constructSubnets(subnets)
-	routeTables["subnet-a0000001"] = false
-	routeTables["subnet-b0000001"] = false
-	routeTables["subnet-c0000001"] = false
-	routeTables["subnet-c0000002"] = true
-	routeTables["subnet-d0000001"] = true
-	routeTables["subnet-d0000002"] = true
-	awsServices.ec2.RouteTables = constructRouteTables(routeTables)
-	result, err = c.listPublicSubnetIDsinVPC(vpcID)
-	if err != nil {
-		t.Errorf("Error listing subnets: %v", err)
-		return
-	}
-
-	if len(result) != 3 {
-		t.Errorf("Expected 3 subnets but got %d", len(result))
-		return
-	}
-
-	expected := []*string{aws.String("subnet-c0000002"), aws.String("subnet-d0000001"), aws.String("subnet-d0000002")}
-	for _, s := range result {
-		if !contains(expected, s) {
-			t.Errorf("Unexpected subnet '%s' found", s)
+	for i, expectedId := range expectedIds {
+		if expectedId != subnetIds[i] {
+			t.Errorf("Expected subnet id %v to match %v", expectedId, subnetIds[i])
 			return
 		}
 	}
