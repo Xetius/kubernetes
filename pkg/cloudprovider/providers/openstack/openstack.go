@@ -639,7 +639,8 @@ func getFloatingIPByPortID(client *gophercloud.ServiceClient, portID string) (*f
 }
 
 func (lb *LoadBalancer) GetLoadBalancer(service *api.Service) (*api.LoadBalancerStatus, bool, error) {
-	vip, err := getVipByName(lb.network, service.Name)
+	loadBalancerName := cloudprovider.GetLoadBalancerName(service)
+	vip, err := getVipByName(lb.network, loadBalancerName)
 	if err == ErrNotFound {
 		return nil, false, nil
 	}
@@ -659,7 +660,9 @@ func (lb *LoadBalancer) GetLoadBalancer(service *api.Service) (*api.LoadBalancer
 // each region.
 
 func (lb *LoadBalancer) EnsureLoadBalancer(service *api.Service, hosts []string) (*api.LoadBalancerStatus, error) {
-	glog.V(4).Infof("EnsureLoadBalancer(%v, %v, %v, %v, %v)", service.Namespace, service.Name, service.Spec.LoadBalancerIP, service.Spec.Ports, hosts)
+	loadBalancerName := cloudprovider.GetLoadBalancerName(service)
+	glog.V(4).Infof("EnsureLoadBalancer(%v, %v, %v, %v, %v, %v)", loadBalancerName, service.Namespace, service.Name,
+		service.Spec.LoadBalancerIP, service.Spec.Ports, hosts)
 
 	ports := service.Spec.Ports
 	if len(ports) > 1 {
@@ -685,7 +688,7 @@ func (lb *LoadBalancer) EnsureLoadBalancer(service *api.Service, hosts []string)
 		return nil, fmt.Errorf("unsupported load balancer affinity: %v", affinity)
 	}
 
-	glog.V(2).Infof("Checking if openstack load balancer already exists: %s", service.Name)
+	glog.V(2).Infof("Checking if openstack load balancer already exists: %s", loadBalancerName)
 	_, exists, err := lb.GetLoadBalancer(service)
 	if err != nil {
 		return nil, fmt.Errorf("error checking if openstack load balancer already exists: %v", err)
@@ -799,9 +802,10 @@ func (lb *LoadBalancer) EnsureLoadBalancer(service *api.Service, hosts []string)
 }
 
 func (lb *LoadBalancer) UpdateLoadBalancer(service *api.Service, hosts []string) error {
-	glog.V(4).Infof("UpdateLoadBalancer(%v, %v)", *service, hosts)
+	loadBalancerName := cloudprovider.GetLoadBalancerName(service)
+	glog.V(4).Infof("UpdateLoadBalancer(%v, %v)", loadBalancerName, hosts)
 
-	vip, err := getVipByName(lb.network, service.Name)
+	vip, err := getVipByName(lb.network, loadBalancerName)
 	if err != nil {
 		return err
 	}
@@ -860,9 +864,10 @@ func (lb *LoadBalancer) UpdateLoadBalancer(service *api.Service, hosts []string)
 }
 
 func (lb *LoadBalancer) EnsureLoadBalancerDeleted(service *api.Service) error {
-	glog.V(4).Infof("EnsureLoadBalancerDeleted(%v)", *service)
+	loadBalancerName := cloudprovider.GetLoadBalancerName(service)
+	glog.V(4).Infof("EnsureLoadBalancerDeleted(%v)", loadBalancerName)
 
-	vip, err := getVipByName(lb.network, service.Name)
+	vip, err := getVipByName(lb.network, loadBalancerName)
 	if err != nil && err != ErrNotFound {
 		return err
 	}

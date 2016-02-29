@@ -2015,14 +2015,14 @@ func (s *AWSCloud) EnsureLoadBalancer(service *api.Service, hosts []string) (*ap
 		return nil, err
 	}
 
-	name := cloudprovider.GetLoadBalancerName(service)
+	loadBalancerName := cloudprovider.GetLoadBalancerName(service)
 	serviceName := types.NamespacedName{Namespace: service.Namespace, Name: service.Name}
 
 	// Create a security group for the load balancer
 	var securityGroupID string
 	{
-		sgName := "k8s-elb-" + name
-		sgDescription := fmt.Sprintf("Security group for Kubernetes ELB %s (%v)", name, serviceName)
+		sgName := "k8s-elb-" + loadBalancerName
+		sgDescription := fmt.Sprintf("Security group for Kubernetes ELB %s (%v)", loadBalancerName, serviceName)
 		securityGroupID, err = s.ensureSecurityGroup(sgName, sgDescription, vpcId)
 		if err != nil {
 			glog.Error("Error creating load balancer security group: ", err)
@@ -2074,7 +2074,7 @@ func (s *AWSCloud) EnsureLoadBalancer(service *api.Service, hosts []string) (*ap
 	isInternal := service.Labels[LabelLoadBalancerIsInternal] == "true"
 
 	// Build the load balancer itself
-	loadBalancer, err := s.ensureLoadBalancer(serviceName, name, listeners, subnetIDs, securityGroupIDs, isInternal)
+	loadBalancer, err := s.ensureLoadBalancer(serviceName, loadBalancerName, listeners, subnetIDs, securityGroupIDs, isInternal)
 	if err != nil {
 		return nil, err
 	}
@@ -2102,7 +2102,7 @@ func (s *AWSCloud) EnsureLoadBalancer(service *api.Service, hosts []string) (*ap
 		return nil, err
 	}
 
-	glog.V(1).Infof("Loadbalancer %s (%v) has DNS name %s", name, serviceName, orEmpty(loadBalancer.DNSName))
+	glog.V(1).Infof("Loadbalancer %s (%v) has DNS name %s", loadBalancerName, serviceName, orEmpty(loadBalancer.DNSName))
 
 	// TODO: Wait for creation?
 
@@ -2112,7 +2112,8 @@ func (s *AWSCloud) EnsureLoadBalancer(service *api.Service, hosts []string) (*ap
 
 // GetLoadBalancer is an implementation of LoadBalancer.GetLoadBalancer
 func (s *AWSCloud) GetLoadBalancer(service *api.Service) (*api.LoadBalancerStatus, bool, error) {
-	lb, err := s.describeLoadBalancer(service.Name)
+	loadBalancerName := cloudprovider.GetLoadBalancerName(service)
+	lb, err := s.describeLoadBalancer(loadBalancerName)
 	if err != nil {
 		return nil, false, err
 	}
@@ -2287,13 +2288,14 @@ func (s *AWSCloud) updateInstanceSecurityGroupsForLoadBalancer(lb *elb.LoadBalan
 
 // EnsureLoadBalancerDeleted implements LoadBalancer.EnsureLoadBalancerDeleted.
 func (s *AWSCloud) EnsureLoadBalancerDeleted(service *api.Service) error {
-	lb, err := s.describeLoadBalancer(service.Name)
+	loadBalancerName := cloudprovider.GetLoadBalancerName(service)
+	lb, err := s.describeLoadBalancer(loadBalancerName)
 	if err != nil {
 		return err
 	}
 
 	if lb == nil {
-		glog.Info("Load balancer already deleted: ", service.Name)
+		glog.Info("Load balancer already deleted: ", loadBalancerName)
 		return nil
 	}
 
@@ -2390,7 +2392,8 @@ func (s *AWSCloud) UpdateLoadBalancer(service *api.Service, hosts []string) erro
 		return err
 	}
 
-	lb, err := s.describeLoadBalancer(service.Name)
+	loadBalancerName := cloudprovider.GetLoadBalancerName(service)
+	lb, err := s.describeLoadBalancer(loadBalancerName)
 	if err != nil {
 		return err
 	}

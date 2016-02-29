@@ -33,8 +33,8 @@ import (
 // Labels for load balancer configuration
 const LabelLoadBalancerCnameZone = "kubernetes.io/aws-lb-cname-zone"
 
-func (s *AWSCloud) ensureLoadBalancer(namespacedName types.NamespacedName, name string, listeners []*elb.Listener, subnetIDs []string, securityGroupIDs []string, internal bool) (*elb.LoadBalancerDescription, error) {
-	loadBalancer, err := s.describeLoadBalancer(name)
+func (s *AWSCloud) ensureLoadBalancer(namespacedName types.NamespacedName, loadBalancerName string, listeners []*elb.Listener, subnetIDs []string, securityGroupIDs []string, internal bool) (*elb.LoadBalancerDescription, error) {
+	loadBalancer, err := s.describeLoadBalancer(loadBalancerName)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +43,7 @@ func (s *AWSCloud) ensureLoadBalancer(namespacedName types.NamespacedName, name 
 
 	if loadBalancer == nil {
 		createRequest := &elb.CreateLoadBalancerInput{}
-		createRequest.LoadBalancerName = aws.String(name)
+		createRequest.LoadBalancerName = aws.String(loadBalancerName)
 
 		createRequest.Listeners = listeners
 
@@ -62,7 +62,7 @@ func (s *AWSCloud) ensureLoadBalancer(namespacedName types.NamespacedName, name 
 			{Key: aws.String(TagNameKubernetesService), Value: aws.String(namespacedName.String())},
 		}
 
-		glog.Infof("Creating load balancer for %v with name: %s", namespacedName, name)
+		glog.Infof("Creating load balancer for %v with name: %s", namespacedName, loadBalancerName)
 		_, err := s.elb.CreateLoadBalancer(createRequest)
 		if err != nil {
 			return nil, err
@@ -79,7 +79,7 @@ func (s *AWSCloud) ensureLoadBalancer(namespacedName types.NamespacedName, name 
 
 			if removals.Len() != 0 {
 				request := &elb.DetachLoadBalancerFromSubnetsInput{}
-				request.LoadBalancerName = aws.String(name)
+				request.LoadBalancerName = aws.String(loadBalancerName)
 				request.Subnets = stringSetToPointers(removals)
 				glog.V(2).Info("Detaching load balancer from removed subnets")
 				_, err := s.elb.DetachLoadBalancerFromSubnets(request)
@@ -91,7 +91,7 @@ func (s *AWSCloud) ensureLoadBalancer(namespacedName types.NamespacedName, name 
 
 			if additions.Len() != 0 {
 				request := &elb.AttachLoadBalancerToSubnetsInput{}
-				request.LoadBalancerName = aws.String(name)
+				request.LoadBalancerName = aws.String(loadBalancerName)
 				request.Subnets = stringSetToPointers(additions)
 				glog.V(2).Info("Attaching load balancer to added subnets")
 				_, err := s.elb.AttachLoadBalancerToSubnets(request)
@@ -110,7 +110,7 @@ func (s *AWSCloud) ensureLoadBalancer(namespacedName types.NamespacedName, name 
 			if !expected.Equal(actual) {
 				// This call just replaces the security groups, unlike e.g. subnets (!)
 				request := &elb.ApplySecurityGroupsToLoadBalancerInput{}
-				request.LoadBalancerName = aws.String(name)
+				request.LoadBalancerName = aws.String(loadBalancerName)
 				request.SecurityGroups = stringPointerArray(securityGroupIDs)
 				glog.V(2).Info("Applying updated security groups to load balancer")
 				_, err := s.elb.ApplySecurityGroupsToLoadBalancer(request)
@@ -130,7 +130,7 @@ func (s *AWSCloud) ensureLoadBalancer(namespacedName types.NamespacedName, name 
 			for _, listenerDescription := range listenerDescriptions {
 				actual := listenerDescription.Listener
 				if actual == nil {
-					glog.Warning("Ignoring empty listener in AWS loadbalancer: ", name)
+					glog.Warning("Ignoring empty listener in AWS loadbalancer: ", loadBalancerName)
 					continue
 				}
 
@@ -170,7 +170,7 @@ func (s *AWSCloud) ensureLoadBalancer(namespacedName types.NamespacedName, name 
 
 			if len(removals) != 0 {
 				request := &elb.DeleteLoadBalancerListenersInput{}
-				request.LoadBalancerName = aws.String(name)
+				request.LoadBalancerName = aws.String(loadBalancerName)
 				request.LoadBalancerPorts = removals
 				glog.V(2).Info("Deleting removed load balancer listeners")
 				_, err := s.elb.DeleteLoadBalancerListeners(request)
@@ -182,7 +182,7 @@ func (s *AWSCloud) ensureLoadBalancer(namespacedName types.NamespacedName, name 
 
 			if len(additions) != 0 {
 				request := &elb.CreateLoadBalancerListenersInput{}
-				request.LoadBalancerName = aws.String(name)
+				request.LoadBalancerName = aws.String(loadBalancerName)
 				request.Listeners = additions
 				glog.V(2).Info("Creating added load balancer listeners")
 				_, err := s.elb.CreateLoadBalancerListeners(request)
@@ -195,7 +195,7 @@ func (s *AWSCloud) ensureLoadBalancer(namespacedName types.NamespacedName, name 
 	}
 
 	if dirty {
-		loadBalancer, err = s.describeLoadBalancer(name)
+		loadBalancer, err = s.describeLoadBalancer(loadBalancerName)
 		if err != nil {
 			glog.Warning("Unable to retrieve load balancer after creation/update")
 			return nil, err

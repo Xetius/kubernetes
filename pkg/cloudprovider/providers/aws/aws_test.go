@@ -31,6 +31,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
+	"github.com/stretchr/testify/mock"
 )
 
 const TestClusterId = "clusterid.test"
@@ -288,13 +289,13 @@ func instanceMatchesFilter(instance *ec2.Instance, filter *ec2.Filter) bool {
 		return contains(filter.Values, *instance.State.Name)
 	}
 
-	if name == "tag:"+TagNameKubernetesCluster {
-		for _, tag := range instance.Tags {
-			if *tag.Key == TagNameKubernetesCluster {
-				return contains(filter.Values, *tag.Value)
+	if strings.HasPrefix(name, "tag:") {
+		tagName := name[4:len(name)]
+		for _, instanceTag := range instance.Tags {
+			if aws.StringValue(instanceTag.Key) == tagName && contains(filter.Values, aws.StringValue(instanceTag.Value)) {
+				return true
 			}
 		}
-		return false
 	}
 
 	panic("Unknown filter name: " + name)
@@ -442,21 +443,27 @@ func (s *FakeEC2) ModifyInstanceAttribute(request *ec2.ModifyInstanceAttributeIn
 
 type FakeELB struct {
 	aws *FakeAWSServices
+	mock.Mock
 }
 
 func (ec2 *FakeELB) CreateLoadBalancer(*elb.CreateLoadBalancerInput) (*elb.CreateLoadBalancerOutput, error) {
 	panic("Not implemented")
 }
 
-func (ec2 *FakeELB) DeleteLoadBalancer(*elb.DeleteLoadBalancerInput) (*elb.DeleteLoadBalancerOutput, error) {
+func (ec2 *FakeELB) DeleteLoadBalancer(input *elb.DeleteLoadBalancerInput) (*elb.DeleteLoadBalancerOutput, error) {
 	panic("Not implemented")
 }
 
 func (ec2 *FakeELB) DescribeLoadBalancers(input *elb.DescribeLoadBalancersInput) (*elb.DescribeLoadBalancersOutput, error) {
-	return &elb.DescribeLoadBalancersOutput{LoadBalancerDescriptions: []*elb.LoadBalancerDescription{
-		{DNSName: aws.String(FakeElbHostname)},
-	}}, nil
+	args := ec2.Called(input)
+	return args.Get(0).(*elb.DescribeLoadBalancersOutput), nil
 }
+
+//func (ec2 *FakeELB) DescribeLoadBalancers(input *elb.DescribeLoadBalancersInput) (*elb.DescribeLoadBalancersOutput, error) {
+//	return &elb.DescribeLoadBalancersOutput{LoadBalancerDescriptions: []*elb.LoadBalancerDescription{
+//		{DNSName: aws.String(FakeElbHostname)},
+//	}}, nil
+//}
 
 func (ec2 *FakeELB) RegisterInstancesWithLoadBalancer(*elb.RegisterInstancesWithLoadBalancerInput) (*elb.RegisterInstancesWithLoadBalancerOutput, error) {
 	panic("Not implemented")
@@ -1227,6 +1234,8 @@ func TestGetTCPLoadBalancer(t *testing.T) {
 		return
 	}
 
+	awsServices.elb.expectDescribeLoadBalancers("a")
+
 	service := api.Service{ObjectMeta: api.ObjectMeta{
 		Name:      FakeServiceName,
 		Namespace: FakeNamespace,
@@ -1253,4 +1262,44 @@ func TestGetTCPLoadBalancer(t *testing.T) {
 	if !containsIngress(lb.Ingress, cnameIngress) {
 		t.Errorf("ELB cname ingress %v was not in list of ingresses %v", expectedCname, lb.Ingress)
 	}
+}
+
+func (self *FakeELB) expectDescribeLoadBalancers(loadBalancerName string) {
+	expectedInput := &elb.DescribeLoadBalancersInput{LoadBalancerNames: []*string{aws.String(loadBalancerName) }}
+	output := &elb.DescribeLoadBalancersOutput{ LoadBalancerDescriptions: []*elb.LoadBalancerDescription{
+		&elb.LoadBalancerDescription{DNSName: aws.String(FakeElbHostname)}}}
+
+	self.On("DescribeLoadBalancers", expectedInput).Return(output)
+}
+
+func TestDescribeLoadBalancerOnDelete(t *testing.T) {
+	awsServices := NewFakeAWSServices()
+	c, _ := newAWSCloud(strings.NewReader("[global]"), awsServices)
+	awsServices.elb.expectDescribeLoadBalancers("aid")
+
+	c.EnsureLoadBalancerDeleted(&api.Service{ObjectMeta: api.ObjectMeta{Name: "myservice", UID: "id"}})
+}
+
+func TestDescribeLoadBalancerOnUpdate(t *testing.T) {
+	awsServices := NewFakeAWSServices()
+	c, _ := newAWSCloud(strings.NewReader("[global]"), awsServices)
+	awsServices.elb.expectDescribeLoadBalancers("aid")
+
+	c.UpdateLoadBalancer(&api.Service{ObjectMeta: api.ObjectMeta{Name: "myservice", UID: "id"}}, []string{})
+}
+
+func TestDescribeLoadBalancerOnGet(t *testing.T) {
+	awsServices := NewFakeAWSServices()
+	c, _ := newAWSCloud(strings.NewReader("[global]"), awsServices)
+	awsServices.elb.expectDescribeLoadBalancers("aid")
+
+	c.GetLoadBalancer(&api.Service{ObjectMeta: api.ObjectMeta{Name: "myservice", UID: "id"}})
+}
+
+func TestDescribeLoadBalancerOnEnsure(t *testing.T) {
+	awsServices := NewFakeAWSServices()
+	c, _ := newAWSCloud(strings.NewReader("[global]"), awsServices)
+	awsServices.elb.expectDescribeLoadBalancers("aid")
+
+	c.EnsureLoadBalancer(&api.Service{ObjectMeta: api.ObjectMeta{Name: "myservice", UID: "id"}}, []string{})
 }
