@@ -250,7 +250,7 @@ func (s *ServiceController) processDelta(delta *cache.Delta) (error, time.Durati
 	} else if errors.IsNotFound(err) {
 		glog.V(2).Infof("Service %v not found, ensuring load balancer is deleted", namespacedName)
 		s.eventRecorder.Event(service, api.EventTypeNormal, "DeletingLoadBalancer", "Deleting load balancer")
-		err := s.balancer.EnsureLoadBalancerDeleted(service)
+		err := s.balancer.EnsureLoadBalancerDeleted(deltaService)
 		if err != nil {
 			message := "Error deleting load balancer (will retry): " + err.Error()
 			s.eventRecorder.Event(deltaService, api.EventTypeWarning, "DeletingLoadBalancerFailed", message)
