@@ -60,6 +60,7 @@ import (
 
 const (
 	DefaultEtcdPathPrefix = "/registry"
+	DefaultEtcdCacheSize  = 150
 	globalTimeout         = time.Minute
 )
 
