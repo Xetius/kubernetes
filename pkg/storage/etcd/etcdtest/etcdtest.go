@@ -21,8 +21,6 @@ import (
 	"path"
 )
 
-const CacheSize int = 50
-
 // Returns the prefix set via the ETCD_PREFIX environment variable (if any).
 func PathPrefix() string {
 	pref := os.Getenv("ETCD_PREFIX")

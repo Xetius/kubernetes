@@ -25,6 +25,7 @@ import (
 	"golang.org/x/net/context"
 
 	"k8s.io/kubernetes/pkg/api/testapi"
+	"k8s.io/kubernetes/pkg/genericapiserver"
 	"k8s.io/kubernetes/pkg/storage"
 	etcdstorage "k8s.io/kubernetes/pkg/storage/etcd"
 	"k8s.io/kubernetes/pkg/storage/etcd/etcdtest"
@@ -52,21 +53,21 @@ func NewAutoscalingEtcdStorage(client etcd.Client) storage.Interface {
 	if client == nil {
 		client = NewEtcdClient()
 	}
-	return etcdstorage.NewEtcdStorage(client, testapi.Autoscaling.Codec(), etcdtest.PathPrefix(), false, etcdtest.CacheSize)
+	return etcdstorage.NewEtcdStorage(client, testapi.Autoscaling.Codec(), etcdtest.PathPrefix(), false, genericapiserver.DefaultDeserializationCacheSize)
 }
 
 func NewBatchEtcdStorage(client etcd.Client) storage.Interface {
 	if client == nil {
 		client = NewEtcdClient()
 	}
-	return etcdstorage.NewEtcdStorage(client, testapi.Batch.Codec(), etcdtest.PathPrefix(), false, etcdtest.CacheSize)
+	return etcdstorage.NewEtcdStorage(client, testapi.Batch.Codec(), etcdtest.PathPrefix(), false, genericapiserver.DefaultDeserializationCacheSize)
 }
 
 func NewExtensionsEtcdStorage(client etcd.Client) storage.Interface {
 	if client == nil {
 		client = NewEtcdClient()
 	}
-	return etcdstorage.NewEtcdStorage(client, testapi.Extensions.Codec(), etcdtest.PathPrefix(), false, etcdtest.CacheSize)
+	return etcdstorage.NewEtcdStorage(client, testapi.Extensions.Codec(), etcdtest.PathPrefix(), false, genericapiserver.DefaultDeserializationCacheSize)
 }
 
 func RequireEtcd() {

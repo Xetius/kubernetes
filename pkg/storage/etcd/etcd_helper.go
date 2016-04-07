@@ -61,18 +61,18 @@ func (c *EtcdStorageConfig) NewStorage() (storage.Interface, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewEtcdStorage(etcdClient, c.Codec, c.Config.Prefix, c.Config.Quorum, c.Config.CacheSize), nil
+	return NewEtcdStorage(etcdClient, c.Codec, c.Config.Prefix, c.Config.Quorum, c.Config.DeserializationCacheSize), nil
 }
 
 // Configuration object for constructing etcd.Config
 type EtcdConfig struct {
-	Prefix     string
-	ServerList []string
-	KeyFile    string
-	CertFile   string
-	CAFile     string
-	Quorum     bool
-	CacheSize  int
+	Prefix                   string
+	ServerList               []string
+	KeyFile                  string
+	CertFile                 string
+	CAFile                   string
+	Quorum                   bool
+	DeserializationCacheSize int
 }
 
 func (c *EtcdConfig) newEtcdClient() (etcd.Client, error) {
